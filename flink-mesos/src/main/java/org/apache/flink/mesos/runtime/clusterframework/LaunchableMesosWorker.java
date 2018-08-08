@@ -52,6 +52,7 @@ import scala.Option;
 
 import static org.apache.flink.mesos.Utils.rangeValues;
 import static org.apache.flink.mesos.Utils.variable;
+import static org.apache.flink.mesos.configuration.MesosOptions.PORT_ASSIGNMENTS;
 
 /**
  * Implements the launch of a Mesos worker.
@@ -65,7 +66,7 @@ public class LaunchableMesosWorker implements LaunchableTask {
 	/**
 	 * The set of configuration keys to be dynamically configured with a port allocated from Mesos.
 	 */
-	private static final String[] TM_PORT_KEYS = {
+	static final String[] TM_PORT_KEYS = {
 		"taskmanager.rpc.port",
 		"taskmanager.data.port"};
 
@@ -142,7 +143,7 @@ public class LaunchableMesosWorker implements LaunchableTask {
 
 		@Override
 		public int getPorts() {
-			return getPortKeys().size();
+			return extractPortKeys(containerSpec.getDynamicConfiguration()).size();
 		}
 
 		@Override
@@ -223,8 +224,7 @@ public class LaunchableMesosWorker implements LaunchableTask {
 		}
 
 		// take needed ports for the TM
-		Set<String> tmPortKeys = getPortKeys();
-
+		Set<String> tmPortKeys = extractPortKeys(containerSpec.getDynamicConfiguration());
 		List<Protos.Resource> portResources = allocation.takeRanges("ports", tmPortKeys.size(), roles);
 		taskInfo.addAllResources(portResources);
 		Iterator<String> portsToAssign = tmPortKeys.iterator();
@@ -316,15 +316,19 @@ public class LaunchableMesosWorker implements LaunchableTask {
 	}
 
 	/**
-	 * Get port keys representing the TM's configured endpoints. This includes mandatory TM endpoints such as
+	 * Get the port keys representing the TM's configured endpoints. This includes mandatory TM endpoints such as
 	 * data and rpc as well as optionally configured endpoints for services such as prometheus reporter
 	 *
-	 * @return A deterministicly ordered Set of port keys to expose from the TM container
+	 * @param config to extract the port keys from
+	 * @return A deterministically ordered Set of port keys to expose from the TM container
 	 */
-	private Set<String> getPortKeys() {
-		LinkedHashSet<String> tmPortKeys = new LinkedHashSet<>(Arrays.asList(TM_PORT_KEYS));
-		containerSpec.getDynamicConfiguration().keySet().stream()
-			.filter(key -> key.endsWith(".port") || key.endsWith(".ports"))  // This matches property naming convention
+	static Set<String> extractPortKeys(Configuration config) {
+		final LinkedHashSet<String> tmPortKeys = new LinkedHashSet<>(Arrays.asList(TM_PORT_KEYS));
+
+		final String portKeys = config.getString(PORT_ASSIGNMENTS);
+
+		Arrays.stream(portKeys.split(","))
+			.map(String::trim)
 			.peek(key -> LOG.debug("Adding port key " + key + " to mesos request"))
 			.forEach(tmPortKeys::add);
 

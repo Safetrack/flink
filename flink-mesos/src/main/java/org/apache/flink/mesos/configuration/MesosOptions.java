@@ -103,4 +103,12 @@ public class MesosOptions {
 		key("mesos.resourcemanager.artifactserver.ssl.enabled")
 			.defaultValue(true);
 
+	/**
+	 * Config parameter to configure which configuration keys will dynamically get a port assigned through Mesos.
+	 */
+	public static final ConfigOption<String> PORT_ASSIGNMENTS = key("mesos.resourcemanager.tasks.port-assignments")
+		.defaultValue("")
+		.withDescription("Comma-separated list of configuration keys which represent a configurable port." +
+			"All port keys will dynamically get a port assigned through Mesos.");
+
 }
