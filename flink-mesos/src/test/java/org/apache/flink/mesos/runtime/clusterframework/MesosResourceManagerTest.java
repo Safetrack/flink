@@ -22,6 +22,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.mesos.runtime.clusterframework.services.MesosServices;
 import org.apache.flink.mesos.runtime.clusterframework.store.MesosWorkerStore;
 import org.apache.flink.mesos.scheduler.ConnectionMonitor;
@@ -40,12 +41,12 @@ import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.clusterframework.ContainerSpecification;
 import org.apache.flink.runtime.clusterframework.ContaineredTaskManagerParameters;
+import org.apache.flink.runtime.clusterframework.TaskExecutorResourceSpec;
+import org.apache.flink.runtime.clusterframework.TaskExecutorResourceUtils;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
-import org.apache.flink.runtime.concurrent.ScheduledExecutor;
 import org.apache.flink.runtime.entrypoint.ClusterInformation;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
-import org.apache.flink.runtime.heartbeat.TestingHeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
 import org.apache.flink.runtime.instance.HardwareDescription;
@@ -55,12 +56,13 @@ import org.apache.flink.runtime.jobmaster.JobMasterRegistrationSuccess;
 import org.apache.flink.runtime.leaderelection.TestingLeaderElectionService;
 import org.apache.flink.runtime.leaderretrieval.SettableLeaderRetrievalService;
 import org.apache.flink.runtime.messages.Acknowledge;
-import org.apache.flink.runtime.metrics.MetricRegistry;
-import org.apache.flink.runtime.metrics.MetricRegistryImpl;
+import org.apache.flink.runtime.metrics.groups.ResourceManagerMetricGroup;
+import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.registration.RegistrationResponse;
 import org.apache.flink.runtime.resourcemanager.JobLeaderIdService;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
 import org.apache.flink.runtime.resourcemanager.SlotRequest;
+import org.apache.flink.runtime.resourcemanager.TaskExecutorRegistration;
 import org.apache.flink.runtime.resourcemanager.slotmanager.ResourceActions;
 import org.apache.flink.runtime.resourcemanager.slotmanager.SlotManager;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
@@ -104,8 +106,8 @@ import java.util.concurrent.TimeUnit;
 import scala.Option;
 
 import static java.util.Collections.singletonList;
-import static org.apache.flink.mesos.runtime.clusterframework.MesosFlinkResourceManager.extractGoalState;
-import static org.apache.flink.mesos.runtime.clusterframework.MesosFlinkResourceManager.extractResourceID;
+import static org.apache.flink.mesos.runtime.clusterframework.MesosResourceManager.extractGoalState;
+import static org.apache.flink.mesos.runtime.clusterframework.MesosResourceManager.extractResourceID;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasEntry;
@@ -163,7 +165,6 @@ public class MesosResourceManagerTest extends TestLogger {
 			HighAvailabilityServices highAvailabilityServices,
 			HeartbeatServices heartbeatServices,
 			SlotManager slotManager,
-			MetricRegistry metricRegistry,
 			JobLeaderIdService jobLeaderIdService,
 			FatalErrorHandler fatalErrorHandler,
 
@@ -172,7 +173,8 @@ public class MesosResourceManagerTest extends TestLogger {
 			MesosServices mesosServices,
 			MesosConfiguration mesosConfig,
 			MesosTaskManagerParameters taskManagerParameters,
-			ContainerSpecification taskManagerContainerSpec) {
+			ContainerSpecification taskManagerContainerSpec,
+			ResourceManagerMetricGroup resourceManagerMetricGroup) {
 			super(
 				rpcService,
 				resourceManagerEndpointId,
@@ -180,7 +182,6 @@ public class MesosResourceManagerTest extends TestLogger {
 				highAvailabilityServices,
 				heartbeatServices,
 				slotManager,
-				metricRegistry,
 				jobLeaderIdService,
 				new ClusterInformation("localhost", 1234),
 				fatalErrorHandler,
@@ -189,7 +190,8 @@ public class MesosResourceManagerTest extends TestLogger {
 				mesosConfig,
 				taskManagerParameters,
 				taskManagerContainerSpec,
-				null);
+				null,
+				resourceManagerMetricGroup);
 		}
 
 		@Override
@@ -242,7 +244,7 @@ public class MesosResourceManagerTest extends TestLogger {
 		TestingMesosResourceManager resourceManager;
 
 		// domain objects for test purposes
-		final ResourceProfile resourceProfile1 = new ResourceProfile(1.0, 1);
+		final ResourceProfile resourceProfile1 = ResourceProfile.UNKNOWN;
 
 		Protos.FrameworkID framework1 = Protos.FrameworkID.newBuilder().setValue("framework1").build();
 		public Protos.SlaveID slave1 = Protos.SlaveID.newBuilder().setValue("slave1").build();
@@ -272,10 +274,17 @@ public class MesosResourceManagerTest extends TestLogger {
 
 			// TaskExecutor templating
 			ContainerSpecification containerSpecification = new ContainerSpecification();
+
+			MemorySize totalProcessMemory = MemorySize.parse("2g");
+			TaskExecutorResourceSpec spec = TaskExecutorResourceUtils
+				.newResourceSpecBuilder(flinkConfig)
+				.withCpuCores(1.0)
+				.withTotalProcessMemory(totalProcessMemory)
+				.build();
 			ContaineredTaskManagerParameters containeredParams =
-				new ContaineredTaskManagerParameters(1024, 768, 256, 4, new HashMap<String, String>());
+				new ContaineredTaskManagerParameters(spec, 4, new HashMap<String, String>());
 			MesosTaskManagerParameters tmParams = new MesosTaskManagerParameters(
-				1.0, 1, MesosTaskManagerParameters.ContainerType.MESOS, Option.<String>empty(), containeredParams,
+				1, 0, MesosTaskManagerParameters.ContainerType.MESOS, Option.<String>empty(), containeredParams,
 				Collections.<Protos.Volume>emptyList(), Collections.<Protos.Parameter>emptyList(), false,
 				Collections.<ConstraintEvaluator>emptyList(), "", Option.<String>empty(),
 				Option.<String>empty(), Collections.<String>emptyList());
@@ -290,7 +299,6 @@ public class MesosResourceManagerTest extends TestLogger {
 					rmServices.highAvailabilityServices,
 					rmServices.heartbeatServices,
 					rmServices.slotManager,
-					rmServices.metricRegistry,
 					rmServices.jobLeaderIdService,
 					fatalErrorHandler,
 					// Mesos specifics
@@ -298,8 +306,8 @@ public class MesosResourceManagerTest extends TestLogger {
 					mesosServices,
 					rmServices.mesosConfig,
 					tmParams,
-					containerSpecification
-				);
+					containerSpecification,
+					UnregisteredMetricGroups.createUnregisteredResourceManagerMetricGroup());
 
 			// TaskExecutors
 			task1Executor = mockTaskExecutor(task1);
@@ -315,10 +323,8 @@ public class MesosResourceManagerTest extends TestLogger {
 		 */
 		class MockResourceManagerRuntimeServices {
 
-			public final ScheduledExecutor scheduledExecutor;
 			public final TestingHighAvailabilityServices highAvailabilityServices;
 			public final HeartbeatServices heartbeatServices;
-			public final MetricRegistry metricRegistry;
 			public final TestingLeaderElectionService rmLeaderElectionService;
 			public final JobLeaderIdService jobLeaderIdService;
 			public final SlotManager slotManager;
@@ -328,12 +334,10 @@ public class MesosResourceManagerTest extends TestLogger {
 			public UUID rmLeaderSessionId;
 
 			MockResourceManagerRuntimeServices() throws Exception {
-				scheduledExecutor = mock(ScheduledExecutor.class);
 				highAvailabilityServices = new TestingHighAvailabilityServices();
 				rmLeaderElectionService = new TestingLeaderElectionService();
 				highAvailabilityServices.setResourceManagerLeaderElectionService(rmLeaderElectionService);
-				heartbeatServices = new TestingHeartbeatServices(5L, 5L, scheduledExecutor);
-				metricRegistry = mock(MetricRegistryImpl.class);
+				heartbeatServices = new HeartbeatServices(5L, 5L);
 				slotManager = mock(SlotManager.class);
 				slotManagerStarted = new CompletableFuture<>();
 				jobLeaderIdService = new JobLeaderIdService(
@@ -344,7 +348,7 @@ public class MesosResourceManagerTest extends TestLogger {
 				doAnswer(new Answer<Object>() {
 					@Override
 					public Object answer(InvocationOnMock invocation) throws Throwable {
-						rmActions = invocation.getArgumentAt(2, ResourceActions.class);
+						rmActions = invocation.getArgument(2);
 						slotManagerStarted.complete(true);
 						return null;
 					}
@@ -659,8 +663,15 @@ public class MesosResourceManagerTest extends TestLogger {
 			final int dataPort = 1234;
 			final HardwareDescription hardwareDescription = new HardwareDescription(1, 2L, 3L, 4L);
 			// send registration message
+			TaskExecutorRegistration taskExecutorRegistration = new TaskExecutorRegistration(
+				task1Executor.address,
+				task1Executor.resourceID,
+				dataPort,
+				hardwareDescription,
+				ResourceProfile.ZERO,
+				ResourceProfile.ZERO);
 			CompletableFuture<RegistrationResponse> successfulFuture =
-				resourceManager.registerTaskExecutor(task1Executor.address, task1Executor.resourceID, dataPort, hardwareDescription, timeout);
+				resourceManager.registerTaskExecutor(taskExecutorRegistration, timeout);
 			RegistrationResponse response = successfulFuture.get(timeout.toMilliseconds(), TimeUnit.MILLISECONDS);
 			assertTrue(response instanceof TaskExecutorRegistrationSuccess);
 			final TaskExecutorRegistrationSuccess registrationResponse = (TaskExecutorRegistrationSuccess) response;

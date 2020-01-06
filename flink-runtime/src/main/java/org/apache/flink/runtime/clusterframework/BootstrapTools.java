@@ -18,22 +18,15 @@
 
 package org.apache.flink.runtime.clusterframework;
 
-import org.apache.flink.api.common.time.Time;
+import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.CoreOptions;
-import org.apache.flink.configuration.JobManagerOptions;
-import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.configuration.WebOptions;
+import org.apache.flink.configuration.ResourceManagerOptions;
 import org.apache.flink.runtime.akka.AkkaUtils;
-import org.apache.flink.runtime.concurrent.ScheduledExecutor;
-import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
-import org.apache.flink.runtime.jobmaster.JobManagerGateway;
-import org.apache.flink.runtime.webmonitor.WebMonitor;
-import org.apache.flink.runtime.webmonitor.WebMonitorUtils;
-import org.apache.flink.runtime.webmonitor.retriever.LeaderGatewayRetriever;
-import org.apache.flink.runtime.webmonitor.retriever.MetricQueryServiceRetriever;
+import org.apache.flink.runtime.entrypoint.parser.CommandLineOptions;
 import org.apache.flink.util.NetUtils;
 
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelException;
@@ -42,10 +35,10 @@ import akka.actor.ActorSystem;
 import com.typesafe.config.Config;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Option;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import java.io.File;
@@ -53,15 +46,13 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.BindException;
-import java.net.ServerSocket;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import scala.Some;
 import scala.Tuple2;
-import scala.concurrent.duration.FiniteDuration;
 
 import static org.apache.flink.configuration.ConfigOptions.key;
 
@@ -85,13 +76,66 @@ public class BootstrapTools {
 	 * @param portRangeDefinition The port range to choose a port from.
 	 * @param logger The logger to output log information.
 	 * @return The ActorSystem which has been started
-	 * @throws Exception
+	 * @throws Exception Thrown when actor system cannot be started in specified port range
+	 */
+	public static ActorSystem startActorSystem(
+		Configuration configuration,
+		String listeningAddress,
+		String portRangeDefinition,
+		Logger logger) throws Exception {
+		return startActorSystem(
+			configuration,
+			listeningAddress,
+			portRangeDefinition,
+			logger,
+			ForkJoinExecutorConfiguration.fromConfiguration(configuration));
+	}
+
+	/**
+	 * Starts an ActorSystem with the given configuration listening at the address/ports.
+	 *
+	 * @param configuration The Flink configuration
+	 * @param listeningAddress The address to listen at.
+	 * @param portRangeDefinition The port range to choose a port from.
+	 * @param logger The logger to output log information.
+	 * @param actorSystemExecutorConfiguration configuration for the ActorSystem's underlying executor
+	 * @return The ActorSystem which has been started
+	 * @throws Exception Thrown when actor system cannot be started in specified port range
 	 */
 	public static ActorSystem startActorSystem(
 			Configuration configuration,
 			String listeningAddress,
 			String portRangeDefinition,
-			Logger logger) throws Exception {
+			Logger logger,
+			@Nonnull ActorSystemExecutorConfiguration actorSystemExecutorConfiguration) throws Exception {
+		return startActorSystem(
+			configuration,
+			AkkaUtils.getFlinkActorSystemName(),
+			listeningAddress,
+			portRangeDefinition,
+			logger,
+			actorSystemExecutorConfiguration);
+	}
+
+	/**
+	 * Starts an ActorSystem with the given configuration listening at the address/ports.
+	 *
+	 * @param configuration The Flink configuration
+	 * @param actorSystemName Name of the started {@link ActorSystem}
+	 * @param listeningAddress The address to listen at.
+	 * @param portRangeDefinition The port range to choose a port from.
+	 * @param logger The logger to output log information.
+	 * @param actorSystemExecutorConfiguration configuration for the ActorSystem's underlying executor
+	 * @return The ActorSystem which has been started
+	 * @throws Exception Thrown when actor system cannot be started in specified port range
+	 */
+	public static ActorSystem startActorSystem(
+			Configuration configuration,
+			String actorSystemName,
+			String listeningAddress,
+			String portRangeDefinition,
+			Logger logger,
+			@Nonnull ActorSystemExecutorConfiguration actorSystemExecutorConfiguration) throws Exception {
 
 		// parse port range definition and create port iterator
 		Iterator<Integer> portsIterator;
@@ -102,22 +146,16 @@ public class BootstrapTools {
 		}
 
 		while (portsIterator.hasNext()) {
-			// first, we check if the port is available by opening a socket
-			// if the actor system fails to start on the port, we try further
-			ServerSocket availableSocket = NetUtils.createSocketFromPorts(portsIterator, ServerSocket::new);
-
-			int port;
-			if (availableSocket == null) {
-				throw new BindException("Unable to allocate further port in port range: " + portRangeDefinition);
-			} else {
-				port = availableSocket.getLocalPort();
-				try {
-					availableSocket.close();
-				} catch (IOException ignored) {}
-			}
+			final int port = portsIterator.next();
 
 			try {
-				return startActorSystem(configuration, listeningAddress, port, logger);
+				return startActorSystem(
+					configuration,
+					actorSystemName,
+					listeningAddress,
+					port,
+					logger,
+					actorSystemExecutorConfiguration);
 			}
 			catch (Exception e) {
 				// we can continue to try if this contains a netty channel exception
@@ -136,6 +174,7 @@ public class BootstrapTools {
 
 	/**
 	 * Starts an Actor System at a specific port.
+	 *
 	 * @param configuration The Flink configuration.
 	 * @param listeningAddress The address to listen at.
 	 * @param listeningPort The port to listen at.
@@ -144,10 +183,61 @@ public class BootstrapTools {
 	 * @throws Exception
 	 */
 	public static ActorSystem startActorSystem(
+		Configuration configuration,
+		String listeningAddress,
+		int listeningPort,
+		Logger logger) throws Exception {
+		return startActorSystem(
+			configuration,
+			listeningAddress,
+			listeningPort,
+			logger,
+			ForkJoinExecutorConfiguration.fromConfiguration(configuration));
+	}
+
+	/**
+	 * Starts an Actor System at a specific port.
+	 * @param configuration The Flink configuration.
+	 * @param listeningAddress The address to listen at.
+	 * @param listeningPort The port to listen at.
+	 * @param logger the logger to output log information.
+	 * @param actorSystemExecutorConfiguration configuration for the ActorSystem's underlying executor
+	 * @return The ActorSystem which has been started.
+	 * @throws Exception
+	 */
+	public static ActorSystem startActorSystem(
 				Configuration configuration,
 				String listeningAddress,
 				int listeningPort,
-				Logger logger) throws Exception {
+				Logger logger,
+				ActorSystemExecutorConfiguration actorSystemExecutorConfiguration) throws Exception {
+		return startActorSystem(
+			configuration,
+			AkkaUtils.getFlinkActorSystemName(),
+			listeningAddress,
+			listeningPort,
+			logger,
+			actorSystemExecutorConfiguration);
+	}
+
+	/**
+	 * Starts an Actor System at a specific port.
+	 * @param configuration The Flink configuration.
+	 * @param actorSystemName Name of the started {@link ActorSystem}
+	 * @param listeningAddress The address to listen at.
+	 * @param listeningPort The port to listen at.
+	 * @param logger the logger to output log information.
+	 * @param actorSystemExecutorConfiguration configuration for the ActorSystem's underlying executor
+	 * @return The ActorSystem which has been started.
+	 * @throws Exception
+	 */
+	public static ActorSystem startActorSystem(
+		Configuration configuration,
+		String actorSystemName,
+		String listeningAddress,
+		int listeningPort,
+		Logger logger,
+		ActorSystemExecutorConfiguration actorSystemExecutorConfiguration) throws Exception {
 
 		String hostPortUrl = NetUtils.unresolvedHostAndPortToNormalizedString(listeningAddress, listeningPort);
 		logger.info("Trying to start actor system at {}", hostPortUrl);
@@ -155,12 +245,12 @@ public class BootstrapTools {
 		try {
 			Config akkaConfig = AkkaUtils.getAkkaConfig(
 				configuration,
-				new Some<>(new Tuple2<>(listeningAddress, listeningPort))
-			);
+				new Some<>(new Tuple2<>(listeningAddress, listeningPort)),
+				actorSystemExecutorConfiguration.getAkkaConfig());
 
 			logger.debug("Using akka configuration\n {}", akkaConfig);
 
-			ActorSystem actorSystem = AkkaUtils.createActorSystem(akkaConfig);
+			ActorSystem actorSystem = AkkaUtils.createActorSystem(actorSystemName, akkaConfig);
 
 			logger.info("Actor system started at {}", AkkaUtils.getAddress(actorSystem));
 			return actorSystem;
@@ -170,91 +260,11 @@ public class BootstrapTools {
 				Throwable cause = t.getCause();
 				if (cause != null && t.getCause() instanceof BindException) {
 					throw new IOException("Unable to create ActorSystem at address " + hostPortUrl +
-							" : " + cause.getMessage(), t);
+						" : " + cause.getMessage(), t);
 				}
 			}
 			throw new Exception("Could not create actor system", t);
 		}
-	}
-
-	/**
-	 * Starts the web frontend.
-	 *
-	 * @param config The Flink config.
-	 * @param highAvailabilityServices Service factory for high availability services
-	 * @param jobManagerRetriever to retrieve the leading JobManagerGateway
-	 * @param queryServiceRetriever to resolve a query service
-	 * @param timeout for asynchronous operations
-	 * @param scheduledExecutor to run asynchronous operations
-	 * @param logger Logger for log output
-	 * @return WebMonitor instance.
-	 * @throws Exception
-	 */
-	public static WebMonitor startWebMonitorIfConfigured(
-			Configuration config,
-			HighAvailabilityServices highAvailabilityServices,
-			LeaderGatewayRetriever<JobManagerGateway> jobManagerRetriever,
-			MetricQueryServiceRetriever queryServiceRetriever,
-			Time timeout,
-			ScheduledExecutor scheduledExecutor,
-			Logger logger) throws Exception {
-
-		if (config.getInteger(WebOptions.PORT, 0) >= 0) {
-			logger.info("Starting JobManager Web Frontend");
-
-			// start the web frontend. we need to load this dynamically
-			// because it is not in the same project/dependencies
-			WebMonitor monitor = WebMonitorUtils.startWebRuntimeMonitor(
-				config,
-				highAvailabilityServices,
-				jobManagerRetriever,
-				queryServiceRetriever,
-				timeout,
-				scheduledExecutor);
-
-			// start the web monitor
-			if (monitor != null) {
-				monitor.start();
-			}
-			return monitor;
-		}
-		else {
-			return null;
-		}
-	}
-
-	/**
-	 * Generate a task manager configuration.
-	 * @param baseConfig Config to start from.
-	 * @param jobManagerHostname Job manager host name.
-	 * @param jobManagerPort Port of the job manager.
-	 * @param numSlots Number of slots to configure.
-	 * @param registrationTimeout Timeout for registration
-	 * @return TaskManager configuration
-	 */
-	public static Configuration generateTaskManagerConfiguration(
-				Configuration baseConfig,
-				String jobManagerHostname,
-				int jobManagerPort,
-				int numSlots,
-				FiniteDuration registrationTimeout) {
-
-		Configuration cfg = cloneConfiguration(baseConfig);
-
-		if (jobManagerHostname != null && !jobManagerHostname.isEmpty()) {
-			cfg.setString(JobManagerOptions.ADDRESS, jobManagerHostname);
-		}
-
-		if (jobManagerPort > 0) {
-			cfg.setInteger(JobManagerOptions.PORT, jobManagerPort);
-		}
-
-		cfg.setString(TaskManagerOptions.REGISTRATION_TIMEOUT, registrationTimeout.toString());
-		if (numSlots != -1){
-			cfg.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, numSlots);
-		}
-
-		return cfg;
 	}
 
 	/**
@@ -326,7 +336,7 @@ public class BootstrapTools {
 	 * Get an instance of the dynamic properties option.
 	 *
 	 * <p>Dynamic properties allow the user to specify additional configuration values with -D, such as
-	 * <tt> -Dfs.overwrite-files=true  -Dtaskmanager.network.memory.min=536346624</tt>
+	 * <tt> -Dfs.overwrite-files=true  -Dtaskmanager.memory.shuffle.min=536346624</tt>
      */
 	public static Option newDynamicPropertiesOption() {
 		return new Option(DYNAMIC_PROPERTIES_OPT, true, "Dynamic properties");
@@ -373,21 +383,14 @@ public class BootstrapTools {
 			boolean hasLogback,
 			boolean hasLog4j,
 			boolean hasKrb5,
-			Class<?> mainClass) {
+			Class<?> mainClass,
+			String mainArgs) {
 
 		final Map<String, String> startCommandValues = new HashMap<>();
 		startCommandValues.put("java", "$JAVA_HOME/bin/java");
 
-		ArrayList<String> params = new ArrayList<>();
-		params.add(String.format("-Xms%dm", tmParams.taskManagerHeapSizeMB()));
-		params.add(String.format("-Xmx%dm", tmParams.taskManagerHeapSizeMB()));
-
-		if (tmParams.taskManagerDirectMemoryLimitMB() >= 0) {
-			params.add(String.format("-XX:MaxDirectMemorySize=%dm",
-				tmParams.taskManagerDirectMemoryLimitMB()));
-		}
-
-		startCommandValues.put("jvmmem", StringUtils.join(params, ' '));
+		final TaskExecutorResourceSpec taskExecutorResourceSpec = tmParams.getTaskExecutorResourceSpec();
+		startCommandValues.put("jvmmem", TaskExecutorResourceUtils.generateJvmParametersStr(taskExecutorResourceSpec));
 
 		String javaOpts = flinkConfig.getString(CoreOptions.FLINK_JVM_OPTIONS);
 		if (flinkConfig.getString(CoreOptions.FLINK_TM_JVM_OPTIONS).length() > 0) {
@@ -419,7 +422,12 @@ public class BootstrapTools {
 		startCommandValues.put("redirects",
 			"1> " + logDirectory + "/taskmanager.out " +
 			"2> " + logDirectory + "/taskmanager.err");
-		startCommandValues.put("args", "--configDir " + configDirectory);
+
+		String argsStr = TaskExecutorResourceUtils.generateDynamicConfigsStr(taskExecutorResourceSpec) + " --configDir " + configDirectory;
+		if (!mainArgs.isEmpty()) {
+			argsStr += " " + mainArgs;
+		}
+		startCommandValues.put("args", argsStr);
 
 		final String commandTemplate = flinkConfig
 			.getString(ConfigConstants.YARN_CONTAINER_START_COMMAND_TEMPLATE,
@@ -464,7 +472,9 @@ public class BootstrapTools {
 		for (Map.Entry<String, String> variable : startCommandValues
 			.entrySet()) {
 			template = template
-				.replace("%" + variable.getKey() + "%", variable.getValue());
+				.replace("%" + variable.getKey() + "%", variable.getValue())
+				.replace("  ", " ")
+				.trim();
 		}
 		return template;
 	}
@@ -503,5 +513,159 @@ public class BootstrapTools {
 		}
 
 		return clonedConfiguration;
+	}
+
+	/**
+	 * Configuration interface for {@link ActorSystem} underlying executor.
+	 */
+	public interface ActorSystemExecutorConfiguration {
+
+		/**
+		 * Create the executor {@link Config} for the respective executor.
+		 *
+		 * @return Akka config for the respective executor
+		 */
+		Config getAkkaConfig();
+	}
+
+	/**
+	 * Configuration for a fork join executor.
+	 */
+	public static class ForkJoinExecutorConfiguration implements ActorSystemExecutorConfiguration {
+
+		private final double parallelismFactor;
+
+		private final int minParallelism;
+
+		private final int maxParallelism;
+
+		public ForkJoinExecutorConfiguration(double parallelismFactor, int minParallelism, int maxParallelism) {
+			this.parallelismFactor = parallelismFactor;
+			this.minParallelism = minParallelism;
+			this.maxParallelism = maxParallelism;
+		}
+
+		public double getParallelismFactor() {
+			return parallelismFactor;
+		}
+
+		public int getMinParallelism() {
+			return minParallelism;
+		}
+
+		public int getMaxParallelism() {
+			return maxParallelism;
+		}
+
+		@Override
+		public Config getAkkaConfig() {
+			return AkkaUtils.getForkJoinExecutorConfig(this);
+		}
+
+		public static ForkJoinExecutorConfiguration fromConfiguration(final Configuration configuration) {
+			final double parallelismFactor = configuration.getDouble(AkkaOptions.FORK_JOIN_EXECUTOR_PARALLELISM_FACTOR);
+			final int minParallelism = configuration.getInteger(AkkaOptions.FORK_JOIN_EXECUTOR_PARALLELISM_MIN);
+			final int maxParallelism = configuration.getInteger(AkkaOptions.FORK_JOIN_EXECUTOR_PARALLELISM_MAX);
+
+			return new ForkJoinExecutorConfiguration(parallelismFactor, minParallelism, maxParallelism);
+		}
+	}
+
+	/**
+	 * Configuration for a fixed thread pool executor.
+	 */
+	public static class FixedThreadPoolExecutorConfiguration implements ActorSystemExecutorConfiguration {
+
+		private final int minNumThreads;
+
+		private final int maxNumThreads;
+
+		private final int threadPriority;
+
+		public FixedThreadPoolExecutorConfiguration(int minNumThreads, int maxNumThreads, int threadPriority) {
+			if (threadPriority < Thread.MIN_PRIORITY || threadPriority > Thread.MAX_PRIORITY) {
+				throw new IllegalArgumentException(
+					String.format(
+						"The thread priority must be within (%s, %s) but it was %s.",
+						Thread.MIN_PRIORITY,
+						Thread.MAX_PRIORITY,
+						threadPriority));
+			}
+
+			this.minNumThreads = minNumThreads;
+			this.maxNumThreads = maxNumThreads;
+			this.threadPriority = threadPriority;
+		}
+
+		public int getMinNumThreads() {
+			return minNumThreads;
+		}
+
+		public int getMaxNumThreads() {
+			return maxNumThreads;
+		}
+
+		public int getThreadPriority() {
+			return threadPriority;
+		}
+
+		@Override
+		public Config getAkkaConfig() {
+			return AkkaUtils.getThreadPoolExecutorConfig(this);
+		}
+	}
+
+	/**
+	 * Get dynamic properties based on two Flink configurations. If base config does not contain and target config
+	 * contains the key or the value is different, it should be added to results. Otherwise, if the base config contains
+	 * and target config does not contain the key, it will be ignored.
+	 *
+	 * @param baseConfig The base configuration.
+	 * @param targetConfig The target configuration.
+	 * @return Dynamic properties as string, separated by whitespace.
+	 */
+	public static String getDynamicProperties(Configuration baseConfig, Configuration targetConfig) {
+
+		String[] newAddedConfigs = targetConfig.keySet().stream().flatMap(
+			(String key) -> {
+				final String baseValue = baseConfig.getString(ConfigOptions.key(key).stringType().noDefaultValue());
+				final String targetValue = targetConfig.getString(ConfigOptions.key(key).stringType().noDefaultValue());
+
+				if (!baseConfig.keySet().contains(key) || !baseValue.equals(targetValue)) {
+					return Stream.of("-" + CommandLineOptions.DYNAMIC_PROPERTY_OPTION.getOpt() + key +
+						CommandLineOptions.DYNAMIC_PROPERTY_OPTION.getValueSeparator() + targetValue);
+				} else {
+					return Stream.empty();
+				}
+			})
+			.toArray(String[]::new);
+		return String.join(" ", newAddedConfigs);
+	}
+
+	/**
+	 * Calculate heap size after cut-off. The heap size after cut-off will be used to set -Xms and -Xmx for jobmanager
+	 * start command.
+	 */
+	public static int calculateHeapSize(int memory, Configuration conf) {
+
+		final float memoryCutoffRatio = conf.getFloat(ResourceManagerOptions.CONTAINERIZED_HEAP_CUTOFF_RATIO);
+		final int minCutoff = conf.getInteger(ResourceManagerOptions.CONTAINERIZED_HEAP_CUTOFF_MIN);
+
+		if (memoryCutoffRatio > 1 || memoryCutoffRatio < 0) {
+			throw new IllegalArgumentException("The configuration value '"
+				+ ResourceManagerOptions.CONTAINERIZED_HEAP_CUTOFF_RATIO.key()
+				+ "' must be between 0 and 1. Value given=" + memoryCutoffRatio);
+		}
+		if (minCutoff > memory) {
+			throw new IllegalArgumentException("The configuration value '"
+				+ ResourceManagerOptions.CONTAINERIZED_HEAP_CUTOFF_MIN.key()
+				+ "' is higher (" + minCutoff + ") than the requested amount of memory " + memory);
+		}
+
+		int heapLimit = (int) ((float) memory * memoryCutoffRatio);
+		if (heapLimit < minCutoff) {
+			heapLimit = minCutoff;
+		}
+		return memory - heapLimit;
 	}
 }

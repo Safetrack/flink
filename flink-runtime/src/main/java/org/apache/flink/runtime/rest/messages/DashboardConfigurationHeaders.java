@@ -19,7 +19,7 @@
 package org.apache.flink.runtime.rest.messages;
 
 import org.apache.flink.runtime.rest.HttpMethodWrapper;
-import org.apache.flink.runtime.rest.handler.legacy.DashboardConfigHandler;
+import org.apache.flink.runtime.rest.handler.cluster.DashboardConfigHandler;
 
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
@@ -28,7 +28,7 @@ import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseSt
  */
 public final class DashboardConfigurationHeaders implements MessageHeaders<EmptyRequestBody, DashboardConfiguration, EmptyMessageParameters> {
 
-	private static final DashboardConfigurationHeaders INSTANCE = new DashboardConfigurationHeaders();
+	public static final DashboardConfigurationHeaders INSTANCE = new DashboardConfigurationHeaders();
 
 	// make the constructor private since we want it to be a singleton
 	private DashboardConfigurationHeaders() {}
@@ -45,7 +45,7 @@ public final class DashboardConfigurationHeaders implements MessageHeaders<Empty
 
 	@Override
 	public String getTargetRestEndpointURL() {
-		return DashboardConfigHandler.DASHBOARD_CONFIG_REST_PATH;
+		return "/config";
 	}
 
 	@Override
