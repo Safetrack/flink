@@ -34,6 +34,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 /**
  * OutputFormat to write data to Apache Cassandra and from a custom Cassandra annotated object.
@@ -55,6 +57,7 @@ public class CassandraPojoOutputFormat<OUT> extends RichOutputFormat<OUT> {
 	private transient Mapper<OUT> mapper;
 	private transient FutureCallback<Void> callback;
 	private transient Throwable exception = null;
+	private Semaphore semaphore;
 
 	public CassandraPojoOutputFormat(ClusterBuilder builder, Class<OUT> outputClass) {
 		this(builder, outputClass, null);
@@ -92,14 +95,17 @@ public class CassandraPojoOutputFormat<OUT> extends RichOutputFormat<OUT> {
 		this.callback = new FutureCallback<Void>() {
 			@Override
 			public void onSuccess(Void ignored) {
+				semaphore.release();
 				onWriteSuccess();
 			}
 
 			@Override
 			public void onFailure(Throwable t) {
+				semaphore.release();
 				onWriteFailure(t);
 			}
 		};
+		semaphore = new Semaphore(Integer.MAX_VALUE);
 	}
 
 	@Override
@@ -107,7 +113,9 @@ public class CassandraPojoOutputFormat<OUT> extends RichOutputFormat<OUT> {
 		if (exception != null) {
 			throw new IOException("write record failed", exception);
 		}
-
+		if (!semaphore.tryAcquire()) {
+			throw new IllegalStateException(String.format("Failed to acquire lock %d of %d is taken", Integer.MAX_VALUE, Integer.MAX_VALUE));
+		}
 		ListenableFuture<Void> result = mapper.saveAsync(record);
 		Futures.addCallback(result, callback);
 	}
@@ -138,6 +146,11 @@ public class CassandraPojoOutputFormat<OUT> extends RichOutputFormat<OUT> {
 	@Override
 	public void close() {
 		mapper = null;
+		try {
+			semaphore.tryAcquire(Integer.MAX_VALUE, Integer.MAX_VALUE, TimeUnit.SECONDS); //Waiting until finished or interrupted
+		} catch (InterruptedException e) {
+			LOG.error("Interrupted while waiting for in-flight queries", e);
+		}
 		try {
 			if (session != null) {
 				session.close();
