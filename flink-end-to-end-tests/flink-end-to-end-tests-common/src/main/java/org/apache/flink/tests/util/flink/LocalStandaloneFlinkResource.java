@@ -28,17 +28,21 @@ import org.apache.flink.runtime.rest.messages.EmptyMessageParameters;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagersHeaders;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagersInfo;
-import org.apache.flink.tests.util.FlinkDistribution;
 import org.apache.flink.util.ConfigurationException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * Flink resource that start local standalone clusters.
@@ -48,10 +52,21 @@ public class LocalStandaloneFlinkResource implements FlinkResource {
 	private static final Logger LOG = LoggerFactory.getLogger(LocalStandaloneFlinkResource.class);
 
 	private final FlinkDistribution distribution = new FlinkDistribution();
+	private final FlinkResourceSetup setup;
+
+	LocalStandaloneFlinkResource(FlinkResourceSetup setup) {
+		this.setup = setup;
+	}
 
 	@Override
 	public void before() throws Exception {
 		distribution.before();
+		for (JarMove jarMove : setup.getJarMoveOperations()) {
+			distribution.moveJar(jarMove);
+		}
+		if (setup.getConfig().isPresent()) {
+			distribution.appendConfiguration(setup.getConfig().get());
+		}
 	}
 
 	@Override
@@ -65,16 +80,9 @@ public class LocalStandaloneFlinkResource implements FlinkResource {
 	}
 
 	@Override
-	public void addConfiguration(final Configuration config) throws IOException {
-		distribution.appendConfiguration(config);
-	}
-
-	@Override
 	public ClusterController startCluster(int numTaskManagers) throws IOException {
-		distribution.startJobManager();
-		for (int x = 0; x < numTaskManagers; x++) {
-			distribution.startTaskManager();
-		}
+		distribution.setTaskExecutorHosts(Collections.nCopies(numTaskManagers, "localhost"));
+		distribution.startFlinkCluster();
 
 		try (final RestClient restClient = new RestClient(RestClientConfiguration.fromConfiguration(new Configuration()), Executors.directExecutor())) {
 			for (int retryAttempt = 0; retryAttempt < 30; retryAttempt++) {
@@ -117,6 +125,11 @@ public class LocalStandaloneFlinkResource implements FlinkResource {
 		throw new RuntimeException("Cluster did not start in expected time-frame.");
 	}
 
+	@Override
+	public Stream<String> searchAllLogs(Pattern pattern, Function<Matcher, String> matchProcessor) throws IOException {
+		return distribution.searchAllLogs(pattern, matchProcessor);
+	}
+
 	private static class StandaloneClusterController implements ClusterController {
 
 		private final FlinkDistribution distribution;
@@ -130,6 +143,11 @@ public class LocalStandaloneFlinkResource implements FlinkResource {
 			final JobID run = distribution.submitJob(job);
 
 			return new StandaloneJobController(run);
+		}
+
+		@Override
+		public void submitSQLJob(SQLJobSubmission job) throws IOException {
+			distribution.submitSQLJob(job);
 		}
 
 		@Override
