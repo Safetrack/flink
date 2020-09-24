@@ -21,7 +21,9 @@ package org.apache.flink.runtime.io.network.api.writer;
 import org.apache.flink.runtime.io.AvailabilityProvider;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
+import org.apache.flink.runtime.io.network.partition.BufferAvailabilityListener;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
+import org.apache.flink.runtime.io.network.partition.ResultSubpartitionView;
 
 import javax.annotation.Nullable;
 
@@ -51,7 +53,15 @@ public interface ResultPartitionWriter extends AutoCloseable, AvailabilityProvid
 	/**
 	 * Requests a {@link BufferBuilder} from this partition for writing data.
 	 */
-	BufferBuilder getBufferBuilder() throws IOException, InterruptedException;
+	BufferBuilder getBufferBuilder(int targetChannel) throws IOException, InterruptedException;
+
+
+	/**
+	 * Try to request a {@link BufferBuilder} from this partition for writing data.
+	 *
+	 * <p>Returns <code>null</code> if no buffer is available or the buffer provider has been destroyed.
+	 */
+	BufferBuilder tryGetBufferBuilder(int targetChannel) throws IOException;
 
 	/**
 	 * Adds the bufferConsumer to the subpartition with the given index.
@@ -65,6 +75,11 @@ public interface ResultPartitionWriter extends AutoCloseable, AvailabilityProvid
 	 * @return true if operation succeeded and bufferConsumer was enqueued for consumption.
 	 */
 	boolean addBufferConsumer(BufferConsumer bufferConsumer, int subpartitionIndex) throws IOException;
+
+	/**
+	 * Returns a reader for the subpartition with the given index.
+	 */
+	ResultSubpartitionView createSubpartitionView(int index, BufferAvailabilityListener availabilityListener) throws IOException;
 
 	/**
 	 * Manually trigger consumption from enqueued {@link BufferConsumer BufferConsumers} in all subpartitions.

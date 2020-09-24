@@ -18,10 +18,16 @@
 
 package org.apache.flink.runtime.io.network.partition.consumer;
 
+import org.apache.flink.runtime.checkpoint.CheckpointOptions;
+import org.apache.flink.runtime.checkpoint.CheckpointType;
+import org.apache.flink.runtime.checkpoint.channel.RecordingChannelStateWriter;
 import org.apache.flink.runtime.concurrent.FutureUtils;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.io.disk.NoOpFileChannelManager;
 import org.apache.flink.runtime.io.network.TaskEventDispatcher;
+import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
+import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
+import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
@@ -42,6 +48,7 @@ import org.apache.flink.runtime.io.network.util.TestBufferFactory;
 import org.apache.flink.runtime.io.network.util.TestPartitionProducer;
 import org.apache.flink.runtime.io.network.util.TestProducerSource;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
+import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
 import org.apache.flink.util.function.CheckedSupplier;
 
 import org.apache.flink.shaded.guava18.com.google.common.collect.Lists;
@@ -62,12 +69,13 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.runtime.io.network.partition.InputChannelTestUtils.createLocalInputChannel;
 import static org.apache.flink.runtime.io.network.partition.InputChannelTestUtils.createSingleInputGate;
+import static org.apache.flink.runtime.io.network.partition.InputGateFairnessTest.setupInputGate;
 import static org.apache.flink.runtime.io.network.partition.consumer.SingleInputGateTest.TestingResultPartitionManager;
 import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThat;
@@ -110,7 +118,7 @@ public class LocalInputChannelTest {
 
 		final NetworkBufferPool networkBuffers = new NetworkBufferPool(
 			(parallelism * producerBufferPoolSize) + (parallelism * parallelism),
-			TestBufferFactory.BUFFER_SIZE, 1);
+			TestBufferFactory.BUFFER_SIZE);
 
 		final ResultPartitionManager partitionManager = new ResultPartitionManager();
 
@@ -169,8 +177,7 @@ public class LocalInputChannelTest {
 				results.add(CompletableFuture.supplyAsync(CheckedSupplier.unchecked(consumer::call), executor));
 			}
 
-			FutureUtils.waitForAll(results)
-				.get(60_000L, TimeUnit.MILLISECONDS);
+			FutureUtils.waitForAll(results).get();
 		}
 		finally {
 			networkBuffers.destroyAllBufferPools();
@@ -286,7 +293,7 @@ public class LocalInputChannelTest {
 		final LocalInputChannel localChannel = createLocalInputChannel(
 			inputGate, new ResultPartitionManager(), 1, 1);
 
-		inputGate.setInputChannel(localChannel);
+		inputGate.setInputChannels(localChannel);
 		localChannel.requestSubpartition(0);
 
 		// The timer should be initialized at the first time of retriggering partition request.
@@ -387,7 +394,7 @@ public class LocalInputChannelTest {
 			public void run() {
 				try {
 					channel.requestSubpartition(0);
-				} catch (IOException | InterruptedException ignored) {
+				} catch (IOException ignored) {
 				}
 			}
 		};
@@ -439,6 +446,55 @@ public class LocalInputChannelTest {
 		Optional<InputChannel.BufferAndAvailability> bufferAndAvailability = channel.getNextBuffer();
 		assertTrue(bufferAndAvailability.isPresent());
 		assertFalse(bufferAndAvailability.get().buffer().isCompressed());
+	}
+
+	@Test(expected = IllegalStateException.class)
+	public void testUnblockReleasedChannel() throws Exception {
+		SingleInputGate inputGate = createSingleInputGate(1);
+		LocalInputChannel localChannel = createLocalInputChannel(inputGate, new ResultPartitionManager());
+
+		localChannel.releaseAllResources();
+		localChannel.resumeConsumption();
+	}
+
+	@Test
+	public void testCheckpointingInflightData() throws Exception {
+		SingleInputGate inputGate = new SingleInputGateBuilder().build();
+
+		ResultPartition parent = PartitionTestUtils.createPartition(
+			ResultPartitionType.PIPELINED,
+			NoOpFileChannelManager.INSTANCE);
+		ResultSubpartition subpartition = parent.getAllPartitions()[0];
+		ResultSubpartitionView subpartitionView = subpartition.createReadView(() -> {});
+
+		TestingResultPartitionManager partitionManager = new TestingResultPartitionManager(subpartitionView);
+		LocalInputChannel channel = createLocalInputChannel(inputGate, partitionManager);
+		inputGate.setInputChannels(channel);
+		channel.requestSubpartition(0);
+
+		final RecordingChannelStateWriter stateWriter = new RecordingChannelStateWriter();
+		inputGate.setChannelStateWriter(stateWriter);
+
+		final CheckpointStorageLocationReference location = CheckpointStorageLocationReference.getDefault();
+		CheckpointOptions options = new CheckpointOptions(CheckpointType.CHECKPOINT, location, true, true);
+		stateWriter.start(0, options);
+
+		final CheckpointBarrier barrier = new CheckpointBarrier(0, 123L, options);
+		channel.checkpointStarted(barrier);
+
+		// add 1 buffer before barrier and 1 buffer afterwards. Only the first buffer should be written.
+		subpartition.add(BufferBuilderTestUtils.createFilledFinishedBufferConsumer(1));
+		assertTrue(channel.getNextBuffer().isPresent());
+
+		subpartition.add(EventSerializer.toBufferConsumer(barrier, true));
+		assertTrue(channel.getNextBuffer().isPresent());
+
+		subpartition.add(BufferBuilderTestUtils.createFilledFinishedBufferConsumer(2));
+		assertTrue(channel.getNextBuffer().isPresent());
+
+		assertArrayEquals(
+			stateWriter.getAddedInput().get(channel.getChannelInfo()).stream().mapToInt(Buffer::getSize).toArray(),
+			new int[] { 1 });
 	}
 
 	// ---------------------------------------------------------------------------------------------
@@ -530,18 +586,19 @@ public class LocalInputChannelTest {
 				.setNumberOfChannels(numberOfInputChannels)
 				.setBufferPoolFactory(bufferPool)
 				.build();
+			InputChannel[] inputChannels = new InputChannel[numberOfInputChannels];
 
 			// Setup input channels
 			for (int i = 0; i < numberOfInputChannels; i++) {
-				InputChannelBuilder.newBuilder()
+				inputChannels[i] = InputChannelBuilder.newBuilder()
 					.setChannelIndex(i)
 					.setPartitionManager(partitionManager)
 					.setPartitionId(consumedPartitionIds[i])
 					.setTaskEventPublisher(taskEventDispatcher)
-					.buildLocalAndSetToGate(inputGate);
+					.buildLocalChannel(inputGate);
 			}
 
-			inputGate.setup();
+			setupInputGate(inputGate, inputChannels);
 
 			this.numberOfInputChannels = numberOfInputChannels;
 			this.numberOfExpectedBuffersPerChannel = numberOfExpectedBuffersPerChannel;
@@ -559,11 +616,11 @@ public class LocalInputChannelTest {
 						boe.get().getBuffer().recycleBuffer();
 
 						// Check that we don't receive too many buffers
-						if (++numberOfBuffersPerChannel[boe.get().getChannelIndex()]
+						if (++numberOfBuffersPerChannel[boe.get().getChannelInfo().getInputChannelIdx()]
 								> numberOfExpectedBuffersPerChannel) {
 
 							throw new IllegalStateException("Received more buffers than expected " +
-									"on channel " + boe.get().getChannelIndex() + ".");
+									"on channel " + boe.get().getChannelInfo() + ".");
 						}
 					}
 				}

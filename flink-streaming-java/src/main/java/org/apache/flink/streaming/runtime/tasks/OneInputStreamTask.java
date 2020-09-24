@@ -23,14 +23,13 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.execution.Environment;
-import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
+import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.metrics.MetricNames;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.io.AbstractDataOutput;
 import org.apache.flink.streaming.runtime.io.CheckpointedInputGate;
-import org.apache.flink.streaming.runtime.io.InputGateUtil;
 import org.apache.flink.streaming.runtime.io.InputProcessorUtil;
 import org.apache.flink.streaming.runtime.io.PushingAsyncDataInput.DataOutput;
 import org.apache.flink.streaming.runtime.io.StreamOneInputProcessor;
@@ -59,7 +58,7 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 	 *
 	 * @param env The task environment for this task.
 	 */
-	public OneInputStreamTask(Environment env) {
+	public OneInputStreamTask(Environment env) throws Exception {
 		super(env);
 	}
 
@@ -76,14 +75,14 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 	@VisibleForTesting
 	public OneInputStreamTask(
 			Environment env,
-			@Nullable TimerService timeProvider) {
+			@Nullable TimerService timeProvider) throws Exception {
 		super(env, timeProvider);
 	}
 
 	@Override
 	public void init() throws Exception {
 		StreamConfig configuration = getConfiguration();
-		int numberOfInputs = configuration.getNumberOfInputs();
+		int numberOfInputs = configuration.getNumberOfNetworkInputs();
 
 		if (numberOfInputs > 0) {
 			CheckpointedInputGate inputGate = createCheckpointedInputGate();
@@ -94,30 +93,30 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 				output,
 				operatorChain);
 		}
-		headOperator.getMetricGroup().gauge(MetricNames.IO_CURRENT_INPUT_WATERMARK, this.inputWatermarkGauge);
+		mainOperator.getMetricGroup().gauge(MetricNames.IO_CURRENT_INPUT_WATERMARK, this.inputWatermarkGauge);
 		// wrap watermark gauge since registered metrics must be unique
 		getEnvironment().getMetricGroup().gauge(MetricNames.IO_CURRENT_INPUT_WATERMARK, this.inputWatermarkGauge::getValue);
 	}
 
 	private CheckpointedInputGate createCheckpointedInputGate() {
-		InputGate[] inputGates = getEnvironment().getAllInputGates();
-		InputGate inputGate = InputGateUtil.createInputGate(inputGates);
+		IndexedInputGate[] inputGates = getEnvironment().getAllInputGates();
 
 		return InputProcessorUtil.createCheckpointedInputGate(
 			this,
-			configuration.getCheckpointMode(),
-			inputGate,
-			getEnvironment().getTaskManagerInfo().getConfiguration(),
+			configuration,
+			getCheckpointCoordinator(),
+			inputGates,
 			getEnvironment().getMetricGroup().getIOMetricGroup(),
-			getTaskNameWithSubtaskAndId());
+			getTaskNameWithSubtaskAndId(),
+			mainMailboxExecutor);
 	}
 
 	private DataOutput<IN> createDataOutput() {
 		return new StreamTaskNetworkOutput<>(
-			headOperator,
+			mainOperator,
 			getStreamStatusMaintainer(),
 			inputWatermarkGauge,
-			setupNumRecordsInCounter(headOperator));
+			setupNumRecordsInCounter(mainOperator));
 	}
 
 	private StreamTaskInput<IN> createTaskInput(CheckpointedInputGate inputGate, DataOutput<IN> output) {

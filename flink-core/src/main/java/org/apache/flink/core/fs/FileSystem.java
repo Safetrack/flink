@@ -760,7 +760,9 @@ public abstract class FileSystem {
 
 	/**
 	 * Gets a description of the characteristics of this file system.
+	 * @deprecated this method is not used anymore.
 	 */
+	@Deprecated
 	public abstract FileSystemKind getKind();
 
 	// ------------------------------------------------------------------------
@@ -1065,7 +1067,7 @@ public abstract class FileSystem {
 			try {
 				FileSystemFactory factory = iter.next();
 				list.add(factory);
-				LOG.debug("Added file system {}:{}", factory.getScheme(), factory.getClass().getName());
+				LOG.debug("Added file system {}:{}", factory.getScheme(), factory.toString());
 			}
 			catch (Throwable t) {
 				// catching Throwable here to handle various forms of class loading

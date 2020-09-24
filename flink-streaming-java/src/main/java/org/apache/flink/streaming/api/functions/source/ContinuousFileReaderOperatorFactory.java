@@ -18,34 +18,33 @@
 package org.apache.flink.streaming.api.functions.source;
 
 import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.io.FileInputFormat;
+import org.apache.flink.api.common.io.InputFormat;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.MailboxExecutor;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperatorFactory;
-import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.operators.StreamOperator;
+import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.api.operators.YieldingOperatorFactory;
-import org.apache.flink.streaming.runtime.tasks.StreamTask;
 
 /**
  * {@link ContinuousFileReaderOperator} factory.
  */
-public class ContinuousFileReaderOperatorFactory<OUT> extends AbstractStreamOperatorFactory<OUT>
-	implements YieldingOperatorFactory<OUT>, OneInputStreamOperatorFactory<TimestampedFileInputSplit, OUT> {
+public class ContinuousFileReaderOperatorFactory<OUT, T extends TimestampedInputSplit>
+	extends AbstractStreamOperatorFactory<OUT>
+	implements YieldingOperatorFactory<OUT>, OneInputStreamOperatorFactory<T, OUT> {
 
-	private final FileInputFormat<OUT> inputFormat;
+	private final InputFormat<OUT, ? super T> inputFormat;
 	private TypeInformation<OUT> type;
 	private ExecutionConfig executionConfig;
 	private transient MailboxExecutor mailboxExecutor;
 
-	public ContinuousFileReaderOperatorFactory(FileInputFormat<OUT> inputFormat) {
+	public ContinuousFileReaderOperatorFactory(InputFormat<OUT, ? super T> inputFormat) {
 		this(inputFormat, null, null);
 	}
 
-	public ContinuousFileReaderOperatorFactory(FileInputFormat<OUT> inputFormat, TypeInformation<OUT> type, ExecutionConfig executionConfig) {
+	public ContinuousFileReaderOperatorFactory(InputFormat<OUT, ? super T> inputFormat, TypeInformation<OUT> type, ExecutionConfig executionConfig) {
 		this.inputFormat = inputFormat;
 		this.type = type;
 		this.executionConfig = executionConfig;
@@ -58,11 +57,11 @@ public class ContinuousFileReaderOperatorFactory<OUT> extends AbstractStreamOper
 	}
 
 	@Override
-	public StreamOperator createStreamOperator(StreamTask containingTask, StreamConfig config, Output output) {
-		ContinuousFileReaderOperator<OUT> operator = new ContinuousFileReaderOperator<>(inputFormat, processingTimeService, mailboxExecutor);
-		operator.setup(containingTask, config, output);
+	public <O extends StreamOperator<OUT>> O createStreamOperator(StreamOperatorParameters<OUT> parameters) {
+		ContinuousFileReaderOperator<OUT, T> operator = new ContinuousFileReaderOperator<>(inputFormat, processingTimeService, mailboxExecutor);
+		operator.setup(parameters.getContainingTask(), parameters.getStreamConfig(), parameters.getOutput());
 		operator.setOutputType(type, executionConfig);
-		return operator;
+		return (O) operator;
 	}
 
 	@Override

@@ -75,15 +75,8 @@ public final class ChannelSelectorRecordWriter<T extends IOReadableWritable> ext
 
 		serializer.serializeRecord(record);
 
-		boolean pruneAfterCopying = false;
 		for (int targetChannel = 0; targetChannel < numberOfChannels; targetChannel++) {
-			if (copyFromSerializerToTargetChannel(targetChannel)) {
-				pruneAfterCopying = true;
-			}
-		}
-
-		if (pruneAfterCopying) {
-			serializer.prune();
+			copyFromSerializerToTargetChannel(targetChannel);
 		}
 	}
 
@@ -100,8 +93,8 @@ public final class ChannelSelectorRecordWriter<T extends IOReadableWritable> ext
 	public BufferBuilder requestNewBufferBuilder(int targetChannel) throws IOException, InterruptedException {
 		checkState(bufferBuilders[targetChannel] == null || bufferBuilders[targetChannel].isFinished());
 
-		BufferBuilder bufferBuilder = targetPartition.getBufferBuilder();
-		targetPartition.addBufferConsumer(bufferBuilder.createBufferConsumer(), targetChannel);
+		BufferBuilder bufferBuilder = super.requestNewBufferBuilder(targetChannel);
+		addBufferConsumer(bufferBuilder.createBufferConsumer(), targetChannel);
 		bufferBuilders[targetChannel] = bufferBuilder;
 		return bufferBuilder;
 	}

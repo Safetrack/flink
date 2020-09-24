@@ -23,10 +23,12 @@ import org.apache.flink.api.common.io.InputFormat;
 import org.apache.flink.api.common.io.OutputFormat;
 import org.apache.flink.api.common.operators.ResourceSpec;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.core.memory.ManagedMemoryUseCase;
+import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
-import org.apache.flink.streaming.api.collector.selector.OutputSelector;
+import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
+import org.apache.flink.streaming.api.operators.CoordinatedOperatorFactory;
 import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
@@ -35,7 +37,13 @@ import javax.annotation.Nullable;
 
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 
@@ -56,17 +64,16 @@ public class StreamNode implements Serializable {
 	private int maxParallelism;
 	private ResourceSpec minResources = ResourceSpec.DEFAULT;
 	private ResourceSpec preferredResources = ResourceSpec.DEFAULT;
-	private int managedMemoryWeight = Transformation.DEFAULT_MANAGED_MEMORY_WEIGHT;
+	private final Map<ManagedMemoryUseCase, Integer> managedMemoryOperatorScopeUseCaseWeights = new HashMap<>();
+	private final Set<ManagedMemoryUseCase> managedMemorySlotScopeUseCases = new HashSet<>();
 	private long bufferTimeout;
 	private final String operatorName;
 	private @Nullable String slotSharingGroup;
 	private @Nullable String coLocationGroup;
-	private KeySelector<?, ?> statePartitioner1;
-	private KeySelector<?, ?> statePartitioner2;
+	private KeySelector<?, ?>[] statePartitioners = new KeySelector[0];
 	private TypeSerializer<?> stateKeySerializer;
 
 	private transient StreamOperatorFactory<?> operatorFactory;
-	private List<OutputSelector<?>> outputSelectors;
 	private TypeSerializer<?>[] typeSerializersIn = new TypeSerializer[0];
 	private TypeSerializer<?> typeSerializerOut;
 
@@ -88,25 +95,21 @@ public class StreamNode implements Serializable {
 			@Nullable String coLocationGroup,
 			StreamOperator<?> operator,
 			String operatorName,
-			List<OutputSelector<?>> outputSelector,
 			Class<? extends AbstractInvokable> jobVertexClass) {
 		this(id, slotSharingGroup, coLocationGroup, SimpleOperatorFactory.of(operator),
-				operatorName, outputSelector, jobVertexClass);
+				operatorName, jobVertexClass);
 	}
 
 	public StreamNode(
-		Integer id,
-		@Nullable String slotSharingGroup,
-		@Nullable String coLocationGroup,
-		StreamOperatorFactory<?> operatorFactory,
-		String operatorName,
-		List<OutputSelector<?>> outputSelector,
-		Class<? extends AbstractInvokable> jobVertexClass) {
-
+			Integer id,
+			@Nullable String slotSharingGroup,
+			@Nullable String coLocationGroup,
+			StreamOperatorFactory<?> operatorFactory,
+			String operatorName,
+			Class<? extends AbstractInvokable> jobVertexClass) {
 		this.id = id;
 		this.operatorName = operatorName;
 		this.operatorFactory = operatorFactory;
-		this.outputSelectors = outputSelector;
 		this.jobVertexClass = jobVertexClass;
 		this.slotSharingGroup = slotSharingGroup;
 		this.coLocationGroup = coLocationGroup;
@@ -199,12 +202,18 @@ public class StreamNode implements Serializable {
 		this.preferredResources = preferredResources;
 	}
 
-	public void setManagedMemoryWeight(int managedMemoryWeight) {
-		this.managedMemoryWeight = managedMemoryWeight;
+	public void setManagedMemoryUseCaseWeights(
+			Map<ManagedMemoryUseCase, Integer> operatorScopeUseCaseWeights, Set<ManagedMemoryUseCase> slotScopeUseCases) {
+		managedMemoryOperatorScopeUseCaseWeights.putAll(operatorScopeUseCaseWeights);
+		managedMemorySlotScopeUseCases.addAll(slotScopeUseCases);
 	}
 
-	public int getManagedMemoryWeight() {
-		return managedMemoryWeight;
+	public Map<ManagedMemoryUseCase, Integer> getManagedMemoryOperatorScopeUseCaseWeights() {
+		return Collections.unmodifiableMap(managedMemoryOperatorScopeUseCaseWeights);
+	}
+
+	public Set<ManagedMemoryUseCase> getManagedMemorySlotScopeUseCases() {
+		return Collections.unmodifiableSet(managedMemorySlotScopeUseCases);
 	}
 
 	public long getBufferTimeout() {
@@ -226,14 +235,6 @@ public class StreamNode implements Serializable {
 
 	public String getOperatorName() {
 		return operatorName;
-	}
-
-	public List<OutputSelector<?>> getOutputSelectors() {
-		return outputSelectors;
-	}
-
-	public void addOutputSelector(OutputSelector<?> outputSelector) {
-		this.outputSelectors.add(outputSelector);
 	}
 
 	public void setSerializersIn(TypeSerializer<?> ...typeSerializersIn) {
@@ -304,20 +305,13 @@ public class StreamNode implements Serializable {
 		return operatorName + "-" + id;
 	}
 
-	public KeySelector<?, ?> getStatePartitioner1() {
-		return statePartitioner1;
+	public KeySelector<?, ?>[] getStatePartitioners() {
+		return statePartitioners;
 	}
 
-	public KeySelector<?, ?> getStatePartitioner2() {
-		return statePartitioner2;
-	}
-
-	public void setStatePartitioner1(KeySelector<?, ?> statePartitioner) {
-		this.statePartitioner1 = statePartitioner;
-	}
-
-	public void setStatePartitioner2(KeySelector<?, ?> statePartitioner) {
-		this.statePartitioner2 = statePartitioner;
+	public void setStatePartitioners(KeySelector<?, ?> ...statePartitioners) {
+		checkArgument(statePartitioners.length > 0);
+		this.statePartitioners = statePartitioners;
 	}
 
 	public TypeSerializer<?> getStateKeySerializer() {
@@ -342,6 +336,17 @@ public class StreamNode implements Serializable {
 
 	public void setUserHash(String userHash) {
 		this.userHash = userHash;
+	}
+
+	public Optional<OperatorCoordinator.Provider> getCoordinatorProvider(
+			String operatorName,
+			OperatorID operatorID) {
+		if (operatorFactory instanceof CoordinatedOperatorFactory) {
+			return Optional.of(((CoordinatedOperatorFactory) operatorFactory)
+					.getCoordinatorProvider(operatorName, operatorID));
+		} else {
+			return Optional.empty();
+		}
 	}
 
 	@Override

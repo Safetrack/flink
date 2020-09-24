@@ -19,25 +19,28 @@
 package org.apache.flink.runtime.checkpoint.metadata;
 
 import org.apache.flink.configuration.ConfigConstants;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.checkpoint.MasterState;
 import org.apache.flink.runtime.checkpoint.OperatorState;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
-import org.apache.flink.runtime.checkpoint.SubtaskState;
-import org.apache.flink.runtime.checkpoint.TaskState;
-import org.apache.flink.runtime.jobgraph.JobVertexID;
+import org.apache.flink.runtime.checkpoint.StateObjectCollection;
 import org.apache.flink.runtime.jobgraph.OperatorID;
-import org.apache.flink.runtime.state.ChainedStateHandle;
 import org.apache.flink.runtime.state.IncrementalRemoteKeyedStateHandle;
+import org.apache.flink.runtime.state.InputChannelStateHandle;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeOffsets;
 import org.apache.flink.runtime.state.KeyGroupsStateHandle;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.OperatorStateHandle;
 import org.apache.flink.runtime.state.OperatorStreamStateHandle;
+import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
 import org.apache.flink.runtime.state.StateHandleID;
 import org.apache.flink.runtime.state.StreamStateHandle;
+import org.apache.flink.runtime.state.filesystem.RelativeFileStateHandle;
 import org.apache.flink.runtime.state.memory.ByteStreamStateHandle;
 import org.apache.flink.util.StringUtils;
+
+import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -47,6 +50,10 @@ import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 
+import static org.apache.flink.runtime.checkpoint.StateHandleDummyUtil.createNewInputChannelStateHandle;
+import static org.apache.flink.runtime.checkpoint.StateHandleDummyUtil.createNewResultSubpartitionStateHandle;
+import static org.apache.flink.runtime.checkpoint.StateObjectCollection.empty;
+import static org.apache.flink.runtime.checkpoint.StateObjectCollection.singleton;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 
@@ -58,16 +65,14 @@ public class CheckpointTestUtils {
 
 	/**
 	 * Creates a random collection of OperatorState objects containing various types of state handles.
-	 */
-	public static Collection<OperatorState> createOperatorStates(int numTaskStates, int numSubtasksPerTask) {
-		return createOperatorStates(new Random(), numTaskStates, numSubtasksPerTask);
-	}
-
-	/**
-	 * Creates a random collection of OperatorState objects containing various types of state handles.
+	 *
+	 * @param basePath The basePath for savepoint, will be null for checkpoint.
+	 * @param numTaskStates Number of tasks.
+	 * @param numSubtasksPerTask Number of subtask for each task.
 	 */
 	public static Collection<OperatorState> createOperatorStates(
 			Random random,
+			@Nullable String basePath,
 			int numTaskStates,
 			int numSubtasksPerTask) {
 
@@ -76,6 +81,12 @@ public class CheckpointTestUtils {
 		for (int stateIdx = 0; stateIdx < numTaskStates; ++stateIdx) {
 
 			OperatorState taskState = new OperatorState(new OperatorID(), numSubtasksPerTask, 128);
+
+			final boolean hasCoordinatorState = random.nextBoolean();
+			if (hasCoordinatorState) {
+				final ByteStreamStateHandle stateHandle = createDummyByteStreamStreamStateHandle(random);
+				taskState.setCoordinatorState(stateHandle);
+			}
 
 			boolean hasOperatorStateBackend = random.nextBoolean();
 			boolean hasOperatorStateStream = random.nextBoolean();
@@ -93,7 +104,7 @@ public class CheckpointTestUtils {
 
 				OperatorStateHandle operatorStateHandleBackend = null;
 				OperatorStateHandle operatorStateHandleStream = null;
-				
+
 				Map<String, OperatorStateHandle.StateMetaInfo> offsetsMap = new HashMap<>();
 				offsetsMap.put("A", new OperatorStateHandle.StateMetaInfo(new long[]{0, 10, 20}, OperatorStateHandle.Mode.SPLIT_DISTRIBUTE));
 				offsetsMap.put("B", new OperatorStateHandle.StateMetaInfo(new long[]{30, 40, 50}, OperatorStateHandle.Mode.SPLIT_DISTRIBUTE));
@@ -111,22 +122,30 @@ public class CheckpointTestUtils {
 				KeyedStateHandle keyedStateStream = null;
 
 				if (hasKeyedBackend) {
-					if (isIncremental) {
+					if (isIncremental && !isSavepoint(basePath)) {
 						keyedStateBackend = createDummyIncrementalKeyedStateHandle(random);
 					} else {
-						keyedStateBackend = createDummyKeyGroupStateHandle(random);
+						keyedStateBackend = createDummyKeyGroupStateHandle(random, basePath);
 					}
 				}
 
 				if (hasKeyedStream) {
-					keyedStateStream = createDummyKeyGroupStateHandle(random);
+					keyedStateStream = createDummyKeyGroupStateHandle(random, basePath);
 				}
+
+				StateObjectCollection<InputChannelStateHandle> inputChannelStateHandles =
+					(random.nextBoolean() && !isSavepoint(basePath)) ? singleton(createNewInputChannelStateHandle(random.nextInt(5), random)) : empty();
+
+				StateObjectCollection<ResultSubpartitionStateHandle> resultSubpartitionStateHandles =
+					(random.nextBoolean() && !isSavepoint(basePath)) ? singleton(createNewResultSubpartitionStateHandle(random.nextInt(5), random)) : empty();
 
 				taskState.putState(subtaskIdx, new OperatorSubtaskState(
 						operatorStateHandleBackend,
 						operatorStateHandleStream,
 						keyedStateStream,
-						keyedStateBackend));
+						keyedStateBackend,
+						inputChannelStateHandles,
+						resultSubpartitionStateHandles));
 			}
 
 			taskStates.add(taskState);
@@ -135,87 +154,8 @@ public class CheckpointTestUtils {
 		return taskStates;
 	}
 
-	/**
-	 * Creates a random collection of TaskState objects containing various types of state handles.
-	 */
-	public static Collection<TaskState> createTaskStates(int numTaskStates, int numSubtasksPerTask) {
-		return createTaskStates(new Random(), numTaskStates, numSubtasksPerTask);
-	}
-
-	/**
-	 * Creates a random collection of TaskState objects containing various types of state handles.
-	 */
-	public static Collection<TaskState> createTaskStates(
-			Random random,
-			int numTaskStates,
-			int numSubtasksPerTask) {
-
-		List<TaskState> taskStates = new ArrayList<>(numTaskStates);
-
-		for (int stateIdx = 0; stateIdx < numTaskStates; ++stateIdx) {
-
-			int chainLength = 1 + random.nextInt(8);
-
-			TaskState taskState = new TaskState(new JobVertexID(), numSubtasksPerTask, 128, chainLength);
-
-			int noNonPartitionableStateAtIndex = random.nextInt(chainLength);
-			int noOperatorStateBackendAtIndex = random.nextInt(chainLength);
-			int noOperatorStateStreamAtIndex = random.nextInt(chainLength);
-
-			boolean hasKeyedBackend = random.nextInt(4) != 0;
-			boolean hasKeyedStream = random.nextInt(4) != 0;
-
-			for (int subtaskIdx = 0; subtaskIdx < numSubtasksPerTask; subtaskIdx++) {
-
-				List<OperatorStateHandle> operatorStatesBackend = new ArrayList<>(chainLength);
-				List<OperatorStateHandle> operatorStatesStream = new ArrayList<>(chainLength);
-
-				for (int chainIdx = 0; chainIdx < chainLength; ++chainIdx) {
-
-					StreamStateHandle operatorStateBackend =
-							new ByteStreamStateHandle("b-" + chainIdx, ("Beautiful-" + chainIdx).getBytes(ConfigConstants.DEFAULT_CHARSET));
-					StreamStateHandle operatorStateStream =
-							new ByteStreamStateHandle("b-" + chainIdx, ("Beautiful-" + chainIdx).getBytes(ConfigConstants.DEFAULT_CHARSET));
-					Map<String, OperatorStateHandle.StateMetaInfo> offsetsMap = new HashMap<>();
-					offsetsMap.put("A", new OperatorStateHandle.StateMetaInfo(new long[]{0, 10, 20}, OperatorStateHandle.Mode.SPLIT_DISTRIBUTE));
-					offsetsMap.put("B", new OperatorStateHandle.StateMetaInfo(new long[]{30, 40, 50}, OperatorStateHandle.Mode.SPLIT_DISTRIBUTE));
-					offsetsMap.put("C", new OperatorStateHandle.StateMetaInfo(new long[]{60, 70, 80}, OperatorStateHandle.Mode.UNION));
-
-					if (chainIdx != noOperatorStateBackendAtIndex) {
-						OperatorStateHandle operatorStateHandleBackend =
-								new OperatorStreamStateHandle(offsetsMap, operatorStateBackend);
-						operatorStatesBackend.add(operatorStateHandleBackend);
-					}
-
-					if (chainIdx != noOperatorStateStreamAtIndex) {
-						OperatorStateHandle operatorStateHandleStream =
-								new OperatorStreamStateHandle(offsetsMap, operatorStateStream);
-						operatorStatesStream.add(operatorStateHandleStream);
-					}
-				}
-
-				KeyGroupsStateHandle keyedStateBackend = null;
-				KeyGroupsStateHandle keyedStateStream = null;
-
-				if (hasKeyedBackend) {
-					keyedStateBackend = createDummyKeyGroupStateHandle(random);
-				}
-
-				if (hasKeyedStream) {
-					keyedStateStream = createDummyKeyGroupStateHandle(random);
-				}
-
-				taskState.putState(subtaskIdx, new SubtaskState(
-						new ChainedStateHandle<>(operatorStatesBackend),
-						new ChainedStateHandle<>(operatorStatesStream),
-						keyedStateStream,
-						keyedStateBackend));
-			}
-
-			taskStates.add(taskState);
-		}
-
-		return taskStates;
+	private static boolean isSavepoint(String basePath) {
+		return basePath != null;
 	}
 
 	/**
@@ -238,7 +178,7 @@ public class CheckpointTestUtils {
 
 	/**
 	 * Asserts that two MasterStates are equal.
-	 * 
+	 *
 	 * <p>The MasterState avoids overriding {@code equals()} on purpose, because equality is not well
 	 * defined in the raw contents.
 	 */
@@ -251,9 +191,8 @@ public class CheckpointTestUtils {
 
 	// ------------------------------------------------------------------------
 
-	/** utility class, not meant to be instantiated */
+	/** utility class, not meant to be instantiated. */
 	private CheckpointTestUtils() {}
-
 
 	public static IncrementalRemoteKeyedStateHandle createDummyIncrementalKeyedStateHandle(Random rnd) {
 		return new IncrementalRemoteKeyedStateHandle(
@@ -262,7 +201,7 @@ public class CheckpointTestUtils {
 			42L,
 			createRandomStateHandleMap(rnd),
 			createRandomStateHandleMap(rnd),
-			createDummyStreamStateHandle(rnd));
+			createDummyStreamStateHandle(rnd, null));
 	}
 
 	public static Map<StateHandleID, StreamStateHandle> createRandomStateHandleMap(Random rnd) {
@@ -270,23 +209,37 @@ public class CheckpointTestUtils {
 		Map<StateHandleID, StreamStateHandle> result = new HashMap<>(size);
 		for (int i = 0; i < size; ++i) {
 			StateHandleID randomId = new StateHandleID(createRandomUUID(rnd).toString());
-			StreamStateHandle stateHandle = createDummyStreamStateHandle(rnd);
+			StreamStateHandle stateHandle = createDummyStreamStateHandle(rnd, null);
 			result.put(randomId, stateHandle);
 		}
 
 		return result;
 	}
 
-	public static KeyGroupsStateHandle createDummyKeyGroupStateHandle(Random rnd) {
+	public static KeyGroupsStateHandle createDummyKeyGroupStateHandle(Random rnd, String basePath) {
 		return new KeyGroupsStateHandle(
 			new KeyGroupRangeOffsets(1, 1, new long[]{rnd.nextInt(1024)}),
-			createDummyStreamStateHandle(rnd));
+			createDummyStreamStateHandle(rnd, basePath));
 	}
 
-	public static StreamStateHandle createDummyStreamStateHandle(Random rnd) {
-		return new ByteStreamStateHandle(
-			String.valueOf(createRandomUUID(rnd)),
-			String.valueOf(createRandomUUID(rnd)).getBytes(ConfigConstants.DEFAULT_CHARSET));
+	public static ByteStreamStateHandle createDummyByteStreamStreamStateHandle(Random rnd) {
+		return (ByteStreamStateHandle) createDummyStreamStateHandle(rnd, null);
+	}
+
+	public static StreamStateHandle createDummyStreamStateHandle(Random rnd, @Nullable String basePath) {
+		if (!isSavepoint(basePath)) {
+			return new ByteStreamStateHandle(
+				String.valueOf(createRandomUUID(rnd)),
+				String.valueOf(createRandomUUID(rnd)).getBytes(ConfigConstants.DEFAULT_CHARSET));
+		} else {
+			long stateSize = rnd.nextLong();
+			if (stateSize <= 0) {
+				stateSize = -stateSize;
+			}
+			String relativePath = String.valueOf(createRandomUUID(rnd));
+			Path statePath = new Path(basePath, relativePath);
+			return new RelativeFileStateHandle(statePath, relativePath, stateSize);
+		}
 	}
 
 	private static UUID createRandomUUID(Random rnd) {

@@ -60,7 +60,7 @@ public class MailboxExecutorImplTest {
 		this.mailbox = new TaskMailboxImpl();
 		this.mailboxExecutor = new MailboxExecutorImpl(mailbox, DEFAULT_PRIORITY, StreamTaskActionExecutor.IMMEDIATE);
 		this.otherThreadExecutor = Executors.newSingleThreadScheduledExecutor();
-		this.mailboxProcessor = new MailboxProcessor(c -> { }, StreamTaskActionExecutor.IMMEDIATE, mailbox, mailboxExecutor);
+		this.mailboxProcessor = new MailboxProcessor(c -> { }, mailbox, StreamTaskActionExecutor.IMMEDIATE);
 	}
 
 	@After
@@ -77,6 +77,26 @@ public class MailboxExecutorImplTest {
 			otherThreadExecutor.shutdownNow();
 			Thread.currentThread().interrupt();
 		}
+	}
+
+	@Test
+	public void testIsIdle() throws Exception {
+		MailboxProcessor processor = new MailboxProcessor(MailboxDefaultAction.Controller::suspendDefaultAction);
+		MailboxExecutorImpl executor = (MailboxExecutorImpl) processor.getMailboxExecutor(DEFAULT_PRIORITY);
+
+		assertFalse(executor.isIdle());
+
+		processor.runMailboxStep(); // suspend default action after suspension
+		processor.mailbox.drain(); // drop any control mails
+
+		assertTrue(executor.isIdle());
+
+		executor.execute(() -> {}, "");
+		assertFalse(executor.isIdle());
+
+		processor.mailbox.drain();
+		processor.mailbox.quiesce();
+		assertFalse(executor.isIdle());
 	}
 
 	@Test

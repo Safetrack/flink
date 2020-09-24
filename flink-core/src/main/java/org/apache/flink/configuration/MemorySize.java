@@ -191,6 +191,7 @@ public class MemorySize implements java.io.Serializable, Comparable<MemorySize> 
 		} else {
 			double approximate = 1.0 * bytes / highestUnit.getMultiplier();
 			return String.format(
+				Locale.ROOT,
 				"%.3f%s (%d bytes)",
 				approximate,
 				highestUnit.getUnits()[1],
@@ -348,7 +349,7 @@ public class MemorySize implements java.io.Serializable, Comparable<MemorySize> 
 	 * <p>To make larger values more compact, the common size suffixes are supported:
 	 *
 	 * <ul>
-	 *     <li>q or 1b or 1bytes (bytes)
+	 *     <li>1b or 1bytes (bytes)
 	 *     <li>1k or 1kb or 1kibibytes (interpreted as kibibytes = 1024 bytes)
 	 *     <li>1m or 1mb or 1mebibytes (interpreted as mebibytes = 1024 kibibytes)
 	 *     <li>1g or 1gb or 1gibibytes (interpreted as gibibytes = 1024 mebibytes)

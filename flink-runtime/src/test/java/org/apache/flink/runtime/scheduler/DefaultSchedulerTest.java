@@ -343,11 +343,11 @@ public class DefaultSchedulerTest extends TestLogger {
 		final TestSchedulingStrategy.Factory schedulingStrategyFactory = new TestSchedulingStrategy.Factory();
 		final DefaultScheduler scheduler = createScheduler(jobGraph, schedulingStrategyFactory);
 		final TestSchedulingStrategy schedulingStrategy = schedulingStrategyFactory.getLastCreatedSchedulingStrategy();
-		final SchedulingTopology<?, ?> topology = schedulingStrategy.getSchedulingTopology();
+		final SchedulingTopology topology = schedulingStrategy.getSchedulingTopology();
 
 		startScheduling(scheduler);
 
-		final SchedulingExecutionVertex<?, ?> onlySchedulingVertex = Iterables.getOnlyElement(topology.getVertices());
+		final SchedulingExecutionVertex onlySchedulingVertex = Iterables.getOnlyElement(topology.getVertices());
 		schedulingStrategy.schedule(Collections.singletonList(onlySchedulingVertex.getId()));
 
 		final ArchivedExecutionVertex onlyExecutionVertex = Iterables.getOnlyElement(scheduler.requestJob().getAllExecutionVertices());
@@ -367,7 +367,7 @@ public class DefaultSchedulerTest extends TestLogger {
 		final TestSchedulingStrategy.Factory schedulingStrategyFactory = new TestSchedulingStrategy.Factory();
 		final DefaultScheduler scheduler = createScheduler(jobGraph, schedulingStrategyFactory);
 		final TestSchedulingStrategy schedulingStrategy = schedulingStrategyFactory.getLastCreatedSchedulingStrategy();
-		final SchedulingTopology<?, ?> topology = schedulingStrategy.getSchedulingTopology();
+		final SchedulingTopology topology = schedulingStrategy.getSchedulingTopology();
 
 		startScheduling(scheduler);
 
@@ -452,7 +452,7 @@ public class DefaultSchedulerTest extends TestLogger {
 
 		final CheckpointCoordinator checkpointCoordinator = getCheckpointCoordinator(scheduler);
 
-		checkpointCoordinator.triggerCheckpoint(System.currentTimeMillis(),  false);
+		checkpointCoordinator.triggerCheckpoint(false);
 		checkpointTriggeredLatch.await();
 		assertThat(checkpointCoordinator.getNumberOfPendingCheckpoints(), is(equalTo(1)));
 
@@ -481,7 +481,7 @@ public class DefaultSchedulerTest extends TestLogger {
 		checkpointCoordinator.addMasterHook(masterHook);
 
 		// complete one checkpoint for state restore
-		checkpointCoordinator.triggerCheckpoint(System.currentTimeMillis(),  false);
+		checkpointCoordinator.triggerCheckpoint(false);
 		checkpointTriggeredLatch.await();
 		final long checkpointId = checkpointCoordinator.getPendingCheckpoints().keySet().iterator().next();
 		acknowledgePendingCheckpoint(scheduler, checkpointId);
@@ -513,7 +513,7 @@ public class DefaultSchedulerTest extends TestLogger {
 		checkpointCoordinator.addMasterHook(masterHook);
 
 		// complete one checkpoint for state restore
-		checkpointCoordinator.triggerCheckpoint(System.currentTimeMillis(),  false);
+		checkpointCoordinator.triggerCheckpoint(false);
 		checkpointTriggeredLatch.await();
 		final long checkpointId = checkpointCoordinator.getPendingCheckpoints().keySet().iterator().next();
 		acknowledgePendingCheckpoint(scheduler, checkpointId);
@@ -632,7 +632,7 @@ public class DefaultSchedulerTest extends TestLogger {
 		final JobGraph jobGraph = singleJobVertexJobGraph(2);
 		final JobID jobid = jobGraph.getJobID();
 		final DefaultScheduler scheduler = createSchedulerAndStartScheduling(jobGraph);
-		final SchedulingTopology<?, ?> topology = scheduler.getSchedulingTopology();
+		final SchedulingTopology topology = scheduler.getSchedulingTopology();
 
 		final Iterator<ArchivedExecutionVertex> vertexIterator = scheduler.requestJob().getAllExecutionVertices().iterator();
 		final ExecutionAttemptID attemptId1 = vertexIterator.next().getCurrentExecutionAttempt().getAttemptId();
@@ -641,7 +641,7 @@ public class DefaultSchedulerTest extends TestLogger {
 
 		scheduler.updateTaskExecutionState(new TaskExecutionState(jobid, attemptId1, ExecutionState.FAILED, new RuntimeException("expected")));
 		scheduler.cancel();
-		final ExecutionState vertex2StateAfterCancel = topology.getVertexOrThrow(executionVertex2).getState();
+		final ExecutionState vertex2StateAfterCancel = topology.getVertex(executionVertex2).getState();
 		final JobStatus statusAfterCancelWhileRestarting = scheduler.requestJobStatus();
 		scheduler.updateTaskExecutionState(new TaskExecutionState(jobid, attemptId2, ExecutionState.CANCELED, new RuntimeException("expected")));
 

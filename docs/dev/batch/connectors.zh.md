@@ -1,7 +1,7 @@
 ---
-title:  "连接器"
-nav-parent_id: batch
-nav-pos: 4
+title:  "DataSet Connectors"
+nav-parent_id: connectors-root
+nav-pos: 10
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
@@ -182,11 +182,5 @@ The example shows how to access an Azure table and turn data into Flink's `DataS
 ## Access MongoDB
 
 This [GitHub repository documents how to use MongoDB with Apache Flink (starting from 0.7-incubating)](https://github.com/okkam-it/flink-mongodb-test).
-
-## Hive Connector
-
-Starting from 1.9.0, Apache Flink provides Hive connector to access Apache Hive tables. [HiveCatalog]({{ site.baseurl }}/zh/dev/table/catalogs.html#hivecatalog) is required in order to use the Hive connector.
-After HiveCatalog is setup, please refer to [Reading & Writing Hive Tables]({{ site.baseurl }}/zh/dev/table/hive/read_write_hive.html) for the usage of the Hive connector and its limitations.
-Same as HiveCatalog, the officially supported Apache Hive versions for Hive connector are 2.3.4 and 1.2.1.
 
 {% top %}

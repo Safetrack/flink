@@ -28,6 +28,7 @@ import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
 import org.apache.flink.runtime.instance.HardwareDescription;
 import org.apache.flink.runtime.instance.InstanceID;
+import org.apache.flink.runtime.io.network.partition.NoOpResourceManagerPartitionTracker;
 import org.apache.flink.runtime.leaderelection.LeaderElectionService;
 import org.apache.flink.runtime.leaderelection.TestingLeaderElectionService;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
@@ -42,6 +43,7 @@ import org.apache.flink.runtime.rpc.exceptions.FencingTokenException;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
 import org.apache.flink.runtime.taskexecutor.SlotStatus;
 import org.apache.flink.runtime.taskexecutor.TaskExecutor;
+import org.apache.flink.runtime.taskexecutor.TaskExecutorMemoryConfiguration;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorRegistrationSuccess;
 import org.apache.flink.runtime.taskexecutor.TestingTaskExecutorGateway;
 import org.apache.flink.runtime.taskexecutor.TestingTaskExecutorGatewayBuilder;
@@ -61,6 +63,7 @@ import java.util.Collection;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
@@ -153,16 +156,18 @@ public class ResourceManagerTaskExecutorTest extends TestLogger {
 		StandaloneResourceManager resourceManager =
 			new StandaloneResourceManager(
 				rpcService,
-				ResourceManager.RESOURCE_MANAGER_NAME + UUID.randomUUID(),
 				resourceManagerResourceID,
 				highAvailabilityServices,
 				heartbeatServices,
 				slotManager,
+				NoOpResourceManagerPartitionTracker::get,
 				jobLeaderIdService,
 				new ClusterInformation("localhost", 1234),
 				fatalErrorHandler,
 				UnregisteredMetricGroups.createUnregisteredResourceManagerMetricGroup(),
-				Time.minutes(5L));
+				Time.minutes(5L),
+				RpcUtils.INF_TIMEOUT,
+				ForkJoinPool.commonPool());
 
 		resourceManager.start();
 
@@ -241,6 +246,7 @@ public class ResourceManagerTaskExecutorTest extends TestLogger {
 				taskExecutorResourceID,
 				dataPort,
 				hardwareDescription,
+				new TaskExecutorMemoryConfiguration(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L),
 				ResourceProfile.ZERO,
 				ResourceProfile.ZERO);
 
@@ -351,6 +357,7 @@ public class ResourceManagerTaskExecutorTest extends TestLogger {
 				taskExecutorResourceID,
 				dataPort,
 				hardwareDescription,
+				new TaskExecutorMemoryConfiguration(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L),
 				ResourceProfile.ZERO,
 				ResourceProfile.ZERO),
 			TIMEOUT);

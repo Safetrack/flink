@@ -30,6 +30,7 @@ import org.apache.flink.runtime.io.network.partition.consumer.LocalInputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.RemoteInputChannel;
 import org.apache.flink.runtime.jobgraph.DistributionPattern;
 import org.apache.flink.runtime.taskexecutor.TaskExecutor;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.FunctionWithException;
 
 import org.slf4j.Logger;
@@ -70,11 +71,13 @@ import static org.apache.flink.util.Preconditions.checkState;
  *
  * <h2>State management</h2>
  */
-public class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
+public abstract class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
 
 	protected static final Logger LOG = LoggerFactory.getLogger(ResultPartition.class);
 
 	private final String owningTaskName;
+
+	private final int partitionIndex;
 
 	protected final ResultPartitionID partitionId;
 
@@ -86,7 +89,7 @@ public class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
 
 	protected final ResultPartitionManager partitionManager;
 
-	public final int numTargetKeyGroups;
+	private final int numTargetKeyGroups;
 
 	// - Runtime state --------------------------------------------------------
 
@@ -106,6 +109,7 @@ public class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
 
 	public ResultPartition(
 		String owningTaskName,
+		int partitionIndex,
 		ResultPartitionID partitionId,
 		ResultPartitionType partitionType,
 		ResultSubpartition[] subpartitions,
@@ -115,6 +119,8 @@ public class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
 		FunctionWithException<BufferPoolOwner, BufferPool, IOException> bufferPoolFactory) {
 
 		this.owningTaskName = checkNotNull(owningTaskName);
+		Preconditions.checkArgument(0 <= partitionIndex, "The partition index must be positive.");
+		this.partitionIndex = partitionIndex;
 		this.partitionId = checkNotNull(partitionId);
 		this.partitionType = checkNotNull(partitionType);
 		this.subpartitions = checkNotNull(subpartitions);
@@ -152,6 +158,10 @@ public class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
 		return partitionId;
 	}
 
+	public int getPartitionIndex() {
+		return partitionIndex;
+	}
+
 	@Override
 	public int getNumberOfSubpartitions() {
 		return subpartitions.length;
@@ -183,10 +193,16 @@ public class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
 	// ------------------------------------------------------------------------
 
 	@Override
-	public BufferBuilder getBufferBuilder() throws IOException, InterruptedException {
+	public BufferBuilder getBufferBuilder(int targetChannel) throws IOException, InterruptedException {
 		checkInProduceState();
 
-		return bufferPool.requestBufferBuilderBlocking();
+		return bufferPool.requestBufferBuilderBlocking(targetChannel);
+	}
+
+	@Override
+	public BufferBuilder tryGetBufferBuilder(int targetChannel) throws IOException {
+		BufferBuilder bufferBuilder = bufferPool.requestBufferBuilder(targetChannel);
+		return bufferBuilder;
 	}
 
 	@Override
@@ -280,6 +296,7 @@ public class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
 	/**
 	 * Returns the requested subpartition.
 	 */
+	@Override
 	public ResultSubpartitionView createSubpartitionView(int index, BufferAvailabilityListener availabilityListener) throws IOException {
 		checkElementIndex(index, subpartitions.length, "Subpartition not found.");
 		checkState(!isReleased.get(), "Partition released.");
@@ -308,16 +325,7 @@ public class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
 	 */
 	@Override
 	public void releaseMemory(int toRelease) throws IOException {
-		checkArgument(toRelease > 0);
-
-		for (ResultSubpartition subpartition : subpartitions) {
-			toRelease -= subpartition.releaseMemory();
-
-			// Only release as much memory as needed
-			if (toRelease <= 0) {
-				break;
-			}
-		}
+		// default behavior is nothing to release
 	}
 
 	/**

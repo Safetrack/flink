@@ -20,6 +20,7 @@ package org.apache.flink.streaming.runtime.io;
 
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
@@ -27,6 +28,7 @@ import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.operators.testutils.DummyCheckpointInvokable;
+import org.apache.flink.streaming.api.operators.SyncMailboxExecutor;
 
 import org.junit.After;
 import org.junit.Test;
@@ -53,7 +55,6 @@ public class CheckpointBarrierTrackerTest {
 	public void ensureEmpty() throws Exception {
 		assertFalse(inputGate.pollNext().isPresent());
 		assertTrue(inputGate.isFinished());
-		assertTrue(inputGate.isEmpty());
 	}
 
 	@Test
@@ -95,9 +96,7 @@ public class CheckpointBarrierTrackerTest {
 		inputGate = createBarrierTracker(1, sequence, validator);
 
 		for (BufferOrEvent boe : sequence) {
-			if (boe.isBuffer() || boe.getEvent().getClass() != CheckpointBarrier.class) {
-				assertEquals(boe, inputGate.pollNext().get());
-			}
+			assertEquals(boe, inputGate.pollNext().get());
 		}
 	}
 
@@ -117,9 +116,7 @@ public class CheckpointBarrierTrackerTest {
 		inputGate = createBarrierTracker(1, sequence, validator);
 
 		for (BufferOrEvent boe : sequence) {
-			if (boe.isBuffer() || boe.getEvent().getClass() != CheckpointBarrier.class) {
-				assertEquals(boe, inputGate.pollNext().get());
-			}
+			assertEquals(boe, inputGate.pollNext().get());
 		}
 	}
 
@@ -148,9 +145,7 @@ public class CheckpointBarrierTrackerTest {
 		inputGate = createBarrierTracker(3, sequence, validator);
 
 		for (BufferOrEvent boe : sequence) {
-			if (boe.isBuffer() || boe.getEvent().getClass() != CheckpointBarrier.class) {
-				assertEquals(boe, inputGate.pollNext().get());
-			}
+			assertEquals(boe, inputGate.pollNext().get());
 		}
 	}
 
@@ -183,9 +178,7 @@ public class CheckpointBarrierTrackerTest {
 		inputGate = createBarrierTracker(3, sequence, validator);
 
 		for (BufferOrEvent boe : sequence) {
-			if (boe.isBuffer() || boe.getEvent().getClass() != CheckpointBarrier.class) {
-				assertEquals(boe, inputGate.pollNext().get());
-			}
+			assertEquals(boe, inputGate.pollNext().get());
 		}
 	}
 
@@ -257,9 +250,7 @@ public class CheckpointBarrierTrackerTest {
 		inputGate = createBarrierTracker(3, sequence, validator);
 
 		for (BufferOrEvent boe : sequence) {
-			if (boe.isBuffer() || boe.getEvent().getClass() != CheckpointBarrier.class) {
-				assertEquals(boe, inputGate.pollNext().get());
-			}
+			assertEquals(boe, inputGate.pollNext().get());
 		}
 	}
 
@@ -282,10 +273,7 @@ public class CheckpointBarrierTrackerTest {
 		inputGate = createBarrierTracker(1, sequence, validator);
 
 		for (BufferOrEvent boe : sequence) {
-			if (boe.isBuffer()) {
-				assertEquals(boe, inputGate.pollNext().get());
-			}
-			assertTrue(inputGate.isEmpty());
+			assertEquals(boe, inputGate.pollNext().get());
 		}
 	}
 
@@ -331,9 +319,7 @@ public class CheckpointBarrierTrackerTest {
 		inputGate = createBarrierTracker(3, sequence, validator);
 
 		for (BufferOrEvent boe : sequence) {
-			if (boe.isBuffer()) {
-				assertEquals(boe, inputGate.pollNext().get());
-			}
+			assertEquals(boe, inputGate.pollNext().get());
 		}
 	}
 
@@ -357,9 +343,7 @@ public class CheckpointBarrierTrackerTest {
 		inputGate = createBarrierTracker(3, sequence, validator);
 
 		for (BufferOrEvent boe : sequence) {
-			if (boe.isBuffer() || (boe.getEvent().getClass() != CheckpointBarrier.class && boe.getEvent().getClass() != CancelCheckpointMarker.class)) {
-				assertEquals(boe, inputGate.pollNext().get());
-			}
+			assertEquals(boe, inputGate.pollNext().get());
 		}
 	}
 
@@ -377,21 +361,21 @@ public class CheckpointBarrierTrackerTest {
 		MockInputGate gate = new MockInputGate(numberOfChannels, Arrays.asList(sequence));
 		return new CheckpointedInputGate(
 			gate,
-			new CachedBufferStorage(PAGE_SIZE, -1, "Testing"),
-			new CheckpointBarrierTracker(gate.getNumberOfInputChannels(), toNotifyOnCheckpoint));
+			new CheckpointBarrierTracker(gate.getNumberOfInputChannels(), toNotifyOnCheckpoint),
+			new SyncMailboxExecutor());
 	}
 
 	private static BufferOrEvent createBarrier(long id, int channel) {
-		return new BufferOrEvent(new CheckpointBarrier(id, System.currentTimeMillis(), CheckpointOptions.forCheckpointWithDefaultLocation()), channel);
+		return new BufferOrEvent(new CheckpointBarrier(id, System.currentTimeMillis(), CheckpointOptions.forCheckpointWithDefaultLocation()), new InputChannelInfo(0, channel));
 	}
 
 	private static BufferOrEvent createCancellationBarrier(long id, int channel) {
-		return new BufferOrEvent(new CancelCheckpointMarker(id), channel);
+		return new BufferOrEvent(new CancelCheckpointMarker(id), new InputChannelInfo(0, channel));
 	}
 
 	private static BufferOrEvent createBuffer(int channel) {
 		return new BufferOrEvent(
-				new NetworkBuffer(MemorySegmentFactory.wrap(new byte[]{1, 2}), FreeingBufferRecycler.INSTANCE), channel);
+				new NetworkBuffer(MemorySegmentFactory.wrap(new byte[]{1, 2}), FreeingBufferRecycler.INSTANCE), new InputChannelInfo(0, channel));
 	}
 
 	// ------------------------------------------------------------------------

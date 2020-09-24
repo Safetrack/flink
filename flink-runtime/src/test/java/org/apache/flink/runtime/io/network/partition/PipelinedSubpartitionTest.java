@@ -75,9 +75,7 @@ public class PipelinedSubpartitionTest extends SubpartitionTestBase {
 
 	@Override
 	PipelinedSubpartition createSubpartition() {
-		final ResultPartition parent = PartitionTestUtils.createPartition();
-
-		return new PipelinedSubpartition(0, parent);
+		return createPipelinedSubpartition();
 	}
 
 	@Override
@@ -297,14 +295,6 @@ public class PipelinedSubpartitionTest extends SubpartitionTestBase {
 		verifyViewReleasedAfterParentRelease(partition);
 	}
 
-	@Test
-	public void testReleaseParentAfterSpilled() throws Exception {
-		final ResultSubpartition partition = createSubpartition();
-		partition.releaseMemory();
-
-		verifyViewReleasedAfterParentRelease(partition);
-	}
-
 	private void verifyViewReleasedAfterParentRelease(ResultSubpartition partition) throws Exception {
 		// Add a bufferConsumer
 		BufferConsumer bufferConsumer = createFilledFinishedBufferConsumer(BufferBuilderTestUtils.BUFFER_SIZE);
@@ -325,5 +315,11 @@ public class PipelinedSubpartitionTest extends SubpartitionTestBase {
 
 		// Verify that parent release is reflected at partition view
 		assertTrue(view.isReleased());
+	}
+
+	public static PipelinedSubpartition createPipelinedSubpartition() {
+		final ResultPartition parent = PartitionTestUtils.createPartition();
+
+		return new PipelinedSubpartition(0, parent);
 	}
 }

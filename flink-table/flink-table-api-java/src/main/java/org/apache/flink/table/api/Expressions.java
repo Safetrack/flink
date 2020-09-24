@@ -26,6 +26,8 @@ import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.expressions.TimePointUnit;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.functions.FunctionDefinition;
+import org.apache.flink.table.functions.UserDefinedFunction;
+import org.apache.flink.table.functions.UserDefinedFunctionHelper;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.utils.TypeConversions;
 import org.apache.flink.table.types.utils.ValueDataTypeConverter;
@@ -223,9 +225,10 @@ public final class Expressions {
 	 * <pre>{@code
 	 * temporalOverlaps(
 	 *      lit("2:55:00").toTime(),
-	 *      interval(Duration.ofHour(1)),
+	 *      lit(1).hours(),
 	 *      lit("3:30:00").toTime(),
-	 *      interval(Duration.ofHour(2))
+	 *      lit(2).hours()
+	 * )
 	 * }</pre>
 	 * leads to true
 	 */
@@ -509,10 +512,31 @@ public final class Expressions {
 	 * @see TableEnvironment#createTemporaryFunction
 	 * @see TableEnvironment#createTemporarySystemFunction
 	 */
-	public static ApiExpression call(String path, Object... params) {
+	public static ApiExpression call(String path, Object... arguments) {
 		return new ApiExpression(ApiExpressionUtils.lookupCall(
 			path,
-			Arrays.stream(params).map(ApiExpressionUtils::objectToExpression).toArray(Expression[]::new)));
+			Arrays.stream(arguments).map(ApiExpressionUtils::objectToExpression).toArray(Expression[]::new)));
+	}
+
+	/**
+	 * A call to an unregistered, inline function.
+	 *
+	 * <p>For functions that have been registered before and are identified by a name, use
+	 * {@link #call(String, Object...)}.
+	 */
+	public static ApiExpression call(UserDefinedFunction function, Object... arguments) {
+		return apiCall(function, arguments);
+	}
+
+	/**
+	 * A call to an unregistered, inline function.
+	 *
+	 * <p>For functions that have been registered before and are identified by a name, use
+	 * {@link #call(String, Object...)}.
+	 */
+	public static ApiExpression call(Class<? extends UserDefinedFunction> function, Object... arguments) {
+		final UserDefinedFunction functionInstance = UserDefinedFunctionHelper.instantiateFunction(function);
+		return apiCall(functionInstance, arguments);
 	}
 
 	private static ApiExpression apiCall(FunctionDefinition functionDefinition, Object... args) {

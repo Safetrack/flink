@@ -60,7 +60,7 @@ class BoundedStreamTask<IN, OUT, OP extends OneInputStreamOperator<IN, OUT> & Bo
 	BoundedStreamTask(
 		Environment environment,
 		Iterable<IN> input,
-		Collector<OUT> collector) {
+		Collector<OUT> collector) throws Exception {
 		super(environment, new NeverFireProcessingTimeService());
 		this.input = input.iterator();
 		this.collector = collector;
@@ -75,24 +75,25 @@ class BoundedStreamTask<IN, OUT, OP extends OneInputStreamOperator<IN, OUT> & Bo
 
 		// re-initialize the operator with the correct collector.
 		StreamOperatorFactory<OUT> operatorFactory = configuration.getStreamOperatorFactory(getUserCodeClassLoader());
-		Tuple2<OP, Optional<ProcessingTimeService>> headOperatorAndTimeService = StreamOperatorFactoryUtil.createOperator(
+		Tuple2<OP, Optional<ProcessingTimeService>> mainOperatorAndTimeService = StreamOperatorFactoryUtil.createOperator(
 				operatorFactory,
 				this,
 				configuration,
-				new CollectorWrapper<>(collector));
-		headOperator = headOperatorAndTimeService.f0;
-		headOperator.initializeState();
-		headOperator.open();
+				new CollectorWrapper<>(collector),
+				operatorChain.getOperatorEventDispatcher());
+		mainOperator = mainOperatorAndTimeService.f0;
+		mainOperator.initializeState(createStreamTaskStateInitializer());
+		mainOperator.open();
 	}
 
 	@Override
 	protected void processInput(MailboxDefaultAction.Controller controller) throws Exception {
 		if (input.hasNext()) {
 			reuse.replace(input.next());
-			headOperator.setKeyContextElement1(reuse);
-			headOperator.processElement(reuse);
+			mainOperator.setKeyContextElement1(reuse);
+			mainOperator.processElement(reuse);
 		} else {
-			headOperator.endInput();
+			mainOperator.endInput();
 			controller.allActionsCompleted();
 		}
 	}
@@ -102,8 +103,8 @@ class BoundedStreamTask<IN, OUT, OP extends OneInputStreamOperator<IN, OUT> & Bo
 
 	@Override
 	protected void cleanup() throws Exception {
-		headOperator.close();
-		headOperator.dispose();
+		mainOperator.close();
+		mainOperator.dispose();
 	}
 
 	private static class CollectorWrapper<OUT> implements Output<StreamRecord<OUT>> {

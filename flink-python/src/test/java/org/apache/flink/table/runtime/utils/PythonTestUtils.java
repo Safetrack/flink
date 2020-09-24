@@ -18,6 +18,15 @@
 
 package org.apache.flink.table.runtime.utils;
 
+import org.apache.flink.python.env.PythonDependencyInfo;
+import org.apache.flink.python.env.PythonEnvironmentManager;
+import org.apache.flink.python.env.beam.ProcessPythonEnvironmentManager;
+import org.apache.flink.python.metric.FlinkMetricContainer;
+import org.apache.flink.python.util.PythonEnvironmentManagerUtils;
+import org.apache.flink.runtime.metrics.NoOpMetricRegistry;
+import org.apache.flink.runtime.metrics.groups.GenericMetricGroup;
+import org.apache.flink.runtime.metrics.groups.MetricGroupTest;
+
 import org.apache.beam.runners.fnexecution.control.JobBundleFactory;
 import org.apache.beam.runners.fnexecution.control.RemoteBundle;
 import org.apache.beam.runners.fnexecution.control.StageBundleFactory;
@@ -51,5 +60,22 @@ public final class PythonTestUtils {
 		inputReceivers.put("input", windowedValueReceiverSpy);
 		when(remoteBundleSpy.getInputReceivers()).thenReturn(inputReceivers);
 		return jobBundleFactorySpy;
+	}
+
+	public static FlinkMetricContainer createMockFlinkMetricContainer() {
+		return new FlinkMetricContainer(
+			new GenericMetricGroup(
+				NoOpMetricRegistry.INSTANCE,
+				new MetricGroupTest.DummyAbstractMetricGroup(NoOpMetricRegistry.INSTANCE),
+				"root"));
+	}
+
+	public static PythonEnvironmentManager createTestEnvironmentManager() {
+		Map<String, String> env = new HashMap<>();
+		env.put(PythonEnvironmentManagerUtils.PYFLINK_UDF_RUNNER_DIR, "");
+		return new ProcessPythonEnvironmentManager(
+			new PythonDependencyInfo(new HashMap<>(), null, null, new HashMap<>(), "python"),
+			new String[] {System.getProperty("java.io.tmpdir")},
+			env);
 	}
 }
