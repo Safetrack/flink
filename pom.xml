@@ -800,7 +800,7 @@ under the License.
 			<dependency>
 				<groupId>org.reflections</groupId>
 				<artifactId>reflections</artifactId>
-				<version>0.9.10</version>
+				<version>0.9.12</version>
 				<scope>test</scope>
 			</dependency>
 
@@ -1151,8 +1151,7 @@ under the License.
 									<stylesheet>plain.xsl</stylesheet>
 
 									<fileMappers>
-										<fileMapper
-											implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
+										<fileMapper implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
 											<targetExtension>.html</targetExtension>
 										</fileMapper>
 									</fileMappers>
@@ -1382,7 +1381,7 @@ under the License.
 						<license implementation="org.apache.rat.analysis.license.SimplePatternBasedLicense">
 							<licenseFamilyCategory>AL2 </licenseFamilyCategory>
 							<licenseFamilyName>Apache License 2.0</licenseFamilyName>
-							<notes />
+							<notes/>
 							<patterns>
 								<pattern>Licensed to the Apache Software Foundation (ASF) under one</pattern>
 							</patterns>
