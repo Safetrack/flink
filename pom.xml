@@ -107,7 +107,7 @@ under the License.
 		<guava.version>18.0</guava.version>
 		<akka.version>2.5.21</akka.version>
 		<target.java.version>1.8</target.java.version>
-		<slf4j.version>1.7.15</slf4j.version>
+		<slf4j.version>1.7.30</slf4j.version>
 		<log4j.version>2.12.1</log4j.version>
 		<!-- Overwrite default values from parent pom.
 			 Intellij is (sometimes?) using those values to choose target language level
@@ -1151,8 +1151,7 @@ under the License.
 									<stylesheet>plain.xsl</stylesheet>
 
 									<fileMappers>
-										<fileMapper
-											implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
+										<fileMapper implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
 											<targetExtension>.html</targetExtension>
 										</fileMapper>
 									</fileMappers>
@@ -1382,7 +1381,7 @@ under the License.
 						<license implementation="org.apache.rat.analysis.license.SimplePatternBasedLicense">
 							<licenseFamilyCategory>AL2 </licenseFamilyCategory>
 							<licenseFamilyName>Apache License 2.0</licenseFamilyName>
-							<notes />
+							<notes/>
 							<patterns>
 								<pattern>Licensed to the Apache Software Foundation (ASF) under one</pattern>
 							</patterns>
